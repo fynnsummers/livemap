@@ -201,6 +201,12 @@ def init_schema(db, engine: str):
             )"""
         )
         db.execute("CREATE INDEX IF NOT EXISTS sessions_expires ON sessions(expires_at)")
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )"""
+        )
         db.commit()
     else:
         db.execute(
@@ -256,6 +262,12 @@ def init_schema(db, engine: str):
                 expires_at INTEGER NOT NULL,
                 ip TEXT,
                 user_agent TEXT
+            )"""
+        )
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             )"""
         )
         db.commit()

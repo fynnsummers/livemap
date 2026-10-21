@@ -1837,3 +1837,70 @@ footer.live .wave-wrap { height: 80px; }
   footer .wave-wrap,
   body { transition: none; }
 }
+
+.setup-form {
+  width: 100%;
+  padding: 18px 16px 16px;
+}
+
+.stepbar {
+  height: 6px;
+  margin: 0 0 8px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.stepbar span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--ink);
+}
+
+.step-label {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pw-meter {
+  height: 6px;
+  margin-top: 8px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.pw-meter span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--muted);
+}
+
+.pw-meter[data-rank="0"] span { width: 8%; background: var(--hot); }
+.pw-meter[data-rank="1"] span { width: 28%; background: var(--hot); }
+.pw-meter[data-rank="2"] span { width: 52%; background: var(--mid); }
+.pw-meter[data-rank="3"] span { width: 76%; background: var(--ok); }
+.pw-meter[data-rank="4"] span { width: 100%; background: var(--ok); }
+
+.pw-label {
+  min-height: 1rem;
+  margin: 4px 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.setup-note {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.setup-form .login-row button[type="button"] {
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+}

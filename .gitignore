@@ -6,5 +6,7 @@ data/events.sqlite-*
 data/f2b.offset
 data/livemap.db
 data/login.txt
+data/setup.code
 .env
 *.env
+!.env.example

@@ -3,66 +3,49 @@ name: livemap
 services:
   db:
     image: postgres:16-alpine
-    container_name: livemap-db
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-livemap}
+      POSTGRES_USER: ${POSTGRES_USER:-livemap}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD in .env setzen}
     volumes:
-      - /opt/livemap/pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 12
-    networks:
-      - livemap
 
   app:
-    build:
-      context: /opt/livemap
-      dockerfile: Dockerfile
-    image: livemap:local
-    container_name: livemap-app
+    build: .
     restart: unless-stopped
-    pid: host
-    privileged: true
     depends_on:
       db:
         condition: service_healthy
     environment:
       LIVEMAP_HOST: "0.0.0.0"
       LIVEMAP_PORT: "8791"
-      LIVEMAP_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-      LIVEMAP_ADMIN_USER: ${LIVEMAP_ADMIN_USER}
-      LIVEMAP_ADMIN_PASSWORD: ${LIVEMAP_ADMIN_PASSWORD}
-      LIVEMAP_NAME: ${LIVEMAP_NAME}
-      LIVEMAP_HOSTER: ${LIVEMAP_HOSTER}
-      LIVEMAP_HOSTER_NAME: ${LIVEMAP_HOSTER_NAME}
-      LIVEMAP_LAT: ${LIVEMAP_LAT}
-      LIVEMAP_LON: ${LIVEMAP_LON}
-      LIVEMAP_OWN_IPS: ${LIVEMAP_OWN_IPS}
-      LIVEMAP_ACTION_NETS: ${LIVEMAP_ACTION_NETS}
-      LIVEMAP_NGINX: ${LIVEMAP_NGINX}
-      LIVEMAP_F2B: ${LIVEMAP_F2B}
-      LIVEMAP_F2B_SUDO: ${LIVEMAP_F2B_SUDO}
-      LIVEMAP_SECURE_COOKIE: ${LIVEMAP_SECURE_COOKIE}
-      LIVEMAP_SESSION_DAYS: ${LIVEMAP_SESSION_DAYS}
+      LIVEMAP_DATABASE_URL: postgresql://${POSTGRES_USER:-livemap}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-livemap}
+      LIVEMAP_NAME: ${LIVEMAP_NAME:-}
+      LIVEMAP_HOSTER: ${LIVEMAP_HOSTER:-ionos}
+      LIVEMAP_HOSTER_NAME: ${LIVEMAP_HOSTER_NAME:-IONOS}
+      LIVEMAP_LAT: ${LIVEMAP_LAT:-52.52}
+      LIVEMAP_LON: ${LIVEMAP_LON:-13.405}
+      LIVEMAP_OWN_IPS: ${LIVEMAP_OWN_IPS:-}
+      LIVEMAP_NGINX: ${LIVEMAP_NGINX:-/var/log/nginx/access.log}
+      LIVEMAP_F2B: ${LIVEMAP_F2B:-/var/log/fail2ban.log}
+      LIVEMAP_F2B_SUDO: ${LIVEMAP_F2B_SUDO:-0}
+      LIVEMAP_SECURE_COOKIE: ${LIVEMAP_SECURE_COOKIE:-1}
+      LIVEMAP_SESSION_DAYS: ${LIVEMAP_SESSION_DAYS:-14}
       TZ: UTC
     ports:
       - "127.0.0.1:8791:8791"
     volumes:
-      - /opt/livemap/data:/app/data
-      - /opt/livemap/static:/app/static:ro
-      - /opt/livemap/server.py:/app/server.py:ro
-      - /opt/livemap/dbutil.py:/app/dbutil.py:ro
-      - /var/log/nginx:/var/log/nginx:ro
-      - /var/log/fail2ban.log:/var/log/fail2ban.log:ro
-      - /var/run/fail2ban/fail2ban.sock:/var/run/fail2ban/fail2ban.sock
-    networks:
-      - livemap
+      - ./data:/app/data
+      # Logs und Fail2ban nur einhängen, wenn der Dienst auf demselben Rechner läuft:
+      # - /var/log/nginx:/var/log/nginx:ro
+      # - /var/log/fail2ban.log:/var/log/fail2ban.log:ro
+      # - /var/run/fail2ban/fail2ban.sock:/var/run/fail2ban/fail2ban.sock
 
-networks:
-  livemap:
-    name: livemap_net
+volumes:
+  pgdata:

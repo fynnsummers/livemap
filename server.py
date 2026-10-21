@@ -63,6 +63,10 @@ PUBLIC_PATHS = {
     "/logo.png",
     "/logo-dark.png",
     "/app.css",
+    "/setup",
+    "/setup.html",
+    "/api/setup",
+    "/api/setup/code",
 }
 
 
@@ -546,13 +550,120 @@ def login_rate_ok(ip: str) -> bool:
         return True
 
 
-def ensure_admin_user():
+_SETUP_DONE = None
+SETUP_CODE_PATH = DATA / "setup.code"
+USER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{2,31}$")
+COMMON_PASSWORDS = {
+    "password", "password1", "password123", "changeme", "livemap", "admin", "admin123",
+    "qwerty", "qwerty123", "letmein", "welcome", "iloveyou", "12345678", "123456789",
+    "1234567890", "passw0rd", "abc12345", "secret", "secret123",
+}
+
+
+def setting_get(key: str):
+    row = DB.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def setting_put(key: str, value: str):
+    DB.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+
+
+def needs_setup() -> bool:
+    global _SETUP_DONE
+    if _SETUP_DONE is not None:
+        return not _SETUP_DONE
     with db_lock:
-        row = DB.execute("SELECT id FROM users WHERE username = ?", (ADMIN_USER,)).fetchone()
+        done = setting_get("setup_done") == "1"
+    _SETUP_DONE = done
+    return not done
+
+
+def password_rank(password: str, username: str) -> tuple[int, str]:
+    labels = ("Too short", "Weak", "Fair", "Good", "Strong")
+    pw = password or ""
+    if len(pw) < 12:
+        return 0, labels[0]
+    lowered = pw.lower()
+    user = (username or "").strip().lower()
+    if lowered in COMMON_PASSWORDS or (user and (lowered == user or user in lowered)):
+        return 1, labels[1]
+    classes = sum((
+        any(ch.islower() for ch in pw),
+        any(ch.isupper() for ch in pw),
+        any(ch.isdigit() for ch in pw),
+        any(not ch.isalnum() for ch in pw),
+    ))
+    if classes < 2:
+        return 1, labels[1]
+    if classes == 2:
+        return 2, labels[2]
+    if len(pw) < 16:
+        return 3, labels[3]
+    return 4, labels[4]
+
+
+def setup_code_matches(code: str) -> bool:
+    with db_lock:
+        stored = setting_get("setup_code_hash") or ""
+    digest = hashlib.sha256((code or "").strip().encode("utf-8")).hexdigest()
+    if not stored:
+        return False
+    return hmac.compare_digest(stored, digest)
+
+
+def ensure_setup_code():
+    if not needs_setup():
+        return
+    with db_lock:
+        stored = setting_get("setup_code_hash")
+    if stored and SETUP_CODE_PATH.exists():
+        print("einrichtung offen, code in data/setup.code", flush=True)
+        return
+    code = secrets.token_urlsafe(18)
+    SETUP_CODE_PATH.write_text(code + "\n", encoding="utf-8")
+    try:
+        os.chmod(SETUP_CODE_PATH, 0o600)
+    except OSError:
+        pass
+    with db_lock:
+        setting_put("setup_code_hash", hashlib.sha256(code.encode("utf-8")).hexdigest())
+        DB.commit()
+    print("einrichtung offen, code in data/setup.code", flush=True)
+
+
+def apply_saved_server():
+    with db_lock:
+        name = setting_get("server_name")
+        hoster = setting_get("server_hoster_name")
+        lat = setting_get("server_lat")
+        lon = setting_get("server_lon")
+    if name:
+        SERVER["name"] = name
+    if hoster:
+        SERVER["hoster_name"] = hoster
+    try:
+        if lat is not None:
+            SERVER["lat"] = float(lat)
+        if lon is not None:
+            SERVER["lon"] = float(lon)
+    except ValueError:
+        pass
+
+
+def ensure_admin_user():
+    if needs_setup():
+        return
+    with db_lock:
+        row = DB.execute("SELECT id FROM users LIMIT 1").fetchone()
         if row:
             return
         if not ADMIN_PASSWORD:
-            raise SystemExit("LIVEMAP_ADMIN_PASSWORD fehlt für den ersten Benutzer")
+            return
         DB.execute(
             "INSERT INTO users (username, password_hash, created_at) VALUES (?,?,?)",
             (ADMIN_USER, hash_password(ADMIN_PASSWORD), int(time.time())),
@@ -1329,6 +1440,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/api/setup/code":
+            self.setup_code()
+            return
+        if path == "/api/setup":
+            self.setup_finish()
+            return
         if path == "/api/login":
             self.login()
             return
@@ -1348,6 +1465,18 @@ class Handler(BaseHTTPRequestHandler):
         if not getattr(self, "_head_only", False):
             self._head_only = False
         path = urlparse(self.path).path
+        if needs_setup() and path in ("/", "/index.html", "/login", "/login.html"):
+            self.redirect("/setup")
+            return
+        if path in ("/setup", "/setup.html"):
+            if not needs_setup():
+                self.redirect("/login")
+                return
+            self.file(STATIC / "setup.html", "text/html; charset=utf-8")
+            return
+        if path == "/api/setup":
+            self.setup_state()
+            return
         if path in ("/login", "/login.html"):
             user, _ = self.current_user()
             if user:
@@ -1394,6 +1523,141 @@ class Handler(BaseHTTPRequestHandler):
             self.file(STATIC / "marks" / path.rsplit("/", 1)[1], "image/svg+xml", "public, max-age=86400")
         else:
             self.send_error(404)
+
+    def read_json(self, limit=8000):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return None
+        if length <= 0 or length > limit:
+            return None
+        try:
+            return json.loads(self.rfile.read(length).decode("utf-8", "replace"))
+        except (json.JSONDecodeError, UnicodeError):
+            return None
+
+    def setup_state(self):
+        if not needs_setup():
+            self.bytes(b'{"needed":false}', "application/json")
+            return
+        payload = json.dumps({
+            "needed": True,
+            "name": SERVER.get("name") or "",
+            "hoster": SERVER.get("hoster_name") or "",
+            "lat": SERVER.get("lat"),
+            "lon": SERVER.get("lon"),
+        }, ensure_ascii=False).encode()
+        self.bytes(payload, "application/json; charset=utf-8")
+
+    def setup_code(self):
+        if not needs_setup():
+            self.json_error(404, "Einrichtung ist schon fertig")
+            return
+        ip = client_ip(self)
+        if not login_rate_ok(ip):
+            self.json_error(429, "Zu viele Versuche, später erneut")
+            return
+        body = self.read_json()
+        if not isinstance(body, dict):
+            self.json_error(400, "JSON ungültig")
+            return
+        if not setup_code_matches(body.get("code") or ""):
+            time.sleep(0.35)
+            self.json_error(401, "Einrichtungscode stimmt nicht")
+            return
+        self.bytes(b'{"ok":true}', "application/json")
+
+    def setup_finish(self):
+        global _SETUP_DONE
+        if not needs_setup():
+            self.json_error(404, "Einrichtung ist schon fertig")
+            return
+        ip = client_ip(self)
+        if not login_rate_ok(ip):
+            self.json_error(429, "Zu viele Versuche, später erneut")
+            return
+        body = self.read_json()
+        if not isinstance(body, dict):
+            self.json_error(400, "JSON ungültig")
+            return
+        code = body.get("code") or ""
+        username = (body.get("username") or "").strip()
+        password = body.get("password") or ""
+        again = body.get("again") or ""
+        name = (body.get("name") or "").strip()
+        hoster = (body.get("hoster") or "").strip()
+        if not setup_code_matches(code):
+            time.sleep(0.35)
+            self.json_error(401, "Einrichtungscode stimmt nicht")
+            return
+        if not USER_RE.fullmatch(username):
+            self.json_error(400, "Benutzer: Buchstabe, dann 2 bis 31 Zeichen aus Buchstaben, Ziffern, _ oder -")
+            return
+        if password != again:
+            self.json_error(400, "Passwörter stimmen nicht überein")
+            return
+        rank, _label = password_rank(password, username)
+        if rank < 3:
+            self.json_error(400, "Passwort ist zu schwach")
+            return
+        if not name or len(name) > 60 or not hoster or len(hoster) > 40:
+            self.json_error(400, "Name und Anbieter ausfüllen")
+            return
+        try:
+            lat = float(body.get("lat"))
+            lon = float(body.get("lon"))
+        except (TypeError, ValueError):
+            self.json_error(400, "Standort ungültig")
+            return
+        if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+            self.json_error(400, "Standort ungültig")
+            return
+        now = int(time.time())
+        hashed = hash_password(password)
+        with db_lock:
+            if setting_get("setup_done") == "1":
+                self.json_error(404, "Einrichtung ist schon fertig")
+                return
+            row = DB.execute("SELECT id FROM users ORDER BY id LIMIT 1").fetchone()
+            if row:
+                uid = row[0]
+                DB.execute(
+                    "UPDATE users SET username = ?, password_hash = ? WHERE id = ?",
+                    (username, hashed, uid),
+                )
+            else:
+                DB.execute(
+                    "INSERT INTO users (username, password_hash, created_at) VALUES (?,?,?)",
+                    (username, hashed, now),
+                )
+                uid = DB.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()[0]
+            DB.execute("DELETE FROM sessions")
+            setting_put("setup_done", "1")
+            setting_put("server_name", name)
+            setting_put("server_hoster_name", hoster)
+            setting_put("server_lat", str(lat))
+            setting_put("server_lon", str(lon))
+            DB.execute("DELETE FROM settings WHERE key = ?", ("setup_code_hash",))
+            DB.commit()
+        _SETUP_DONE = True
+        SERVER["name"] = name
+        SERVER["hoster_name"] = hoster
+        SERVER["lat"] = lat
+        SERVER["lon"] = lon
+        try:
+            SETUP_CODE_PATH.unlink()
+        except OSError:
+            pass
+        token = create_session(uid, ip, self.headers.get("User-Agent") or "")
+        payload = json.dumps({"ok": True, "user": {"id": uid, "username": username}}, ensure_ascii=False).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Set-Cookie", session_cookie_header(token, self))
+        self.end_headers()
+        if not getattr(self, "_head_only", False):
+            self.wfile.write(payload)
 
     def login(self):
         ip = client_ip(self)
@@ -1659,7 +1923,9 @@ def main():
     net_starts, net_ends, net_keys, net_labels = load_networks()
     print(f"geo-bereiche {len(geo_starts)} netze {len(net_starts)}", flush=True)
     DB = connect()
+    ensure_setup_code()
     ensure_admin_user()
+    apply_saved_server()
     prune()
     import_fail2ban()
     import_recent_probes()

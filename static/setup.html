@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Livemap · Einrichtung</title>
+  <meta name="theme-color" content="#0f1216">
+  <script>
+    try {
+      document.documentElement.dataset.theme = localStorage.getItem("livemap.theme") === "light" ? "light" : "dark";
+    } catch (err) { /* ignore */ }
+  </script>
+  <meta name="robots" content="noindex,nofollow">
+  <link rel="icon" href="/favicon.png?v=4" type="image/png">
+  <link rel="stylesheet" href="/app.css?v=55">
+</head>
+<body class="login-page">
+  <canvas id="loginMap" class="login-map" aria-hidden="true"></canvas>
+  <div class="login-veil" aria-hidden="true"></div>
+  <header>
+    <a class="brand" href="/setup">
+      <img class="brand-logo logo-for-dark" src="/logo-dark.png?v=5" alt="Livemap">
+      <img class="brand-logo logo-for-light" src="/logo.png?v=5" alt="">
+    </a>
+  </header>
+  <main class="login-main">
+    <section class="login-panel">
+      <form class="setup-form" id="setupForm" autocomplete="off">
+        <p class="login-kicker">Einrichtung</p>
+        <div class="stepbar" aria-hidden="true"><span id="stepFill"></span></div>
+        <p class="step-label" id="stepLabel">Schritt 1 von 3</p>
+
+        <div data-step="1">
+          <p class="setup-note">Der Einrichtungscode steht nur auf dem Server, in <code>data/setup.code</code> und in der Ausgabe des Dienstes. Damit kann niemand sonst das Konto anlegen.</p>
+          <label>Einrichtungscode
+            <input id="code" name="code" autocomplete="off" required>
+          </label>
+        </div>
+
+        <div data-step="2" hidden>
+          <label>Benutzer
+            <input id="username" name="username" autocomplete="username" spellcheck="false">
+          </label>
+          <label>Passwort
+            <input id="password" name="password" type="password" autocomplete="new-password">
+          </label>
+          <div class="pw-meter" id="pwMeter" data-rank=""><span></span></div>
+          <p class="pw-label" id="pwLabel"></p>
+          <label>Wiederholen
+            <input id="again" name="again" type="password" autocomplete="new-password">
+          </label>
+          <p class="setup-note">Der Balken muss Good oder Strong erreichen. Mindestens 12 Zeichen, drei Zeichenarten, nicht der Benutzername.</p>
+        </div>
+
+        <div data-step="3" hidden>
+          <label>Name
+            <input id="serverName" name="name" maxlength="60">
+          </label>
+          <label>Anbieter
+            <input id="serverHoster" name="hoster" maxlength="40">
+          </label>
+          <label>Breite
+            <input id="serverLat" name="lat" inputmode="decimal">
+          </label>
+          <label>Länge
+            <input id="serverLon" name="lon" inputmode="decimal">
+          </label>
+        </div>
+
+        <div class="login-row">
+          <button type="button" id="backBtn" hidden>Zurück</button>
+          <button type="button" class="solid" id="nextBtn">Weiter</button>
+          <p class="login-error" id="error" role="alert"></p>
+        </div>
+      </form>
+    </section>
+  </main>
+  <footer class="login-foot">© 2026 Livemap</footer>
+  <script>
+    const form = document.getElementById("setupForm");
+    const error = document.getElementById("error");
+    const nextBtn = document.getElementById("nextBtn");
+    const backBtn = document.getElementById("backBtn");
+    const stepFill = document.getElementById("stepFill");
+    const stepLabel = document.getElementById("stepLabel");
+    const pwMeter = document.getElementById("pwMeter");
+    const pwLabel = document.getElementById("pwLabel");
+    const common = new Set(["password","password1","password123","changeme","livemap","admin","admin123","qwerty","qwerty123","letmein","welcome","iloveyou","12345678","123456789","1234567890","passw0rd","abc12345","secret","secret123"]);
+    let step = 1;
+
+    function rankPassword(pw, username) {
+      const labels = ["Too short", "Weak", "Fair", "Good", "Strong"];
+      if (pw.length < 12) return [0, labels[0]];
+      const low = pw.toLowerCase();
+      const user = username.trim().toLowerCase();
+      if (common.has(low) || (user && (low === user || low.includes(user)))) return [1, labels[1]];
+      const classes = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].filter((re) => re.test(pw)).length;
+      if (classes < 2) return [1, labels[1]];
+      if (classes === 2) return [2, labels[2]];
+      if (pw.length < 16) return [3, labels[3]];
+      return [4, labels[4]];
+    }
+
+    function paintMeter() {
+      const pw = document.getElementById("password").value;
+      if (!pw) {
+        pwMeter.dataset.rank = "";
+        pwLabel.textContent = "";
+        return;
+      }
+      const [rank, label] = rankPassword(pw, document.getElementById("username").value);
+      pwMeter.dataset.rank = String(rank);
+      pwLabel.textContent = label;
+    }
+
+    function showStep(next) {
+      step = next;
+      error.textContent = "";
+      document.querySelectorAll("[data-step]").forEach((el) => {
+        el.hidden = Number(el.dataset.step) !== step;
+      });
+      stepFill.style.width = `${step / 3 * 100}%`;
+      stepLabel.textContent = `Schritt ${step} von 3`;
+      backBtn.hidden = step === 1;
+      nextBtn.textContent = step === 3 ? "Fertig" : "Weiter";
+      nextBtn.disabled = false;
+    }
+
+    document.getElementById("password").addEventListener("input", paintMeter);
+    document.getElementById("username").addEventListener("input", paintMeter);
+
+    async function post(url, body) {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      return { res, data };
+    }
+
+    nextBtn.addEventListener("click", async () => {
+      error.textContent = "";
+      nextBtn.disabled = true;
+      try {
+        if (step === 1) {
+          const { res, data } = await post("/api/setup/code", { code: document.getElementById("code").value.trim() });
+          if (!res.ok) {
+            error.textContent = data.error || "Einrichtungscode stimmt nicht";
+            nextBtn.disabled = false;
+            return;
+          }
+          showStep(2);
+          return;
+        }
+        if (step === 2) {
+          const username = document.getElementById("username").value.trim();
+          const password = document.getElementById("password").value;
+          const again = document.getElementById("again").value;
+          if (!/^[A-Za-z][A-Za-z0-9_-]{2,31}$/.test(username)) {
+            error.textContent = "Benutzer: Buchstabe, dann 2 bis 31 Zeichen aus Buchstaben, Ziffern, _ oder -";
+            nextBtn.disabled = false;
+            return;
+          }
+          const [rank] = rankPassword(password, username);
+          if (rank < 3) {
+            error.textContent = "Passwort ist zu schwach";
+            nextBtn.disabled = false;
+            return;
+          }
+          if (password !== again) {
+            error.textContent = "Passwörter stimmen nicht überein";
+            nextBtn.disabled = false;
+            return;
+          }
+          showStep(3);
+          return;
+        }
+        const { res, data } = await post("/api/setup", {
+          code: document.getElementById("code").value.trim(),
+          username: document.getElementById("username").value.trim(),
+          password: document.getElementById("password").value,
+          again: document.getElementById("again").value,
+          name: document.getElementById("serverName").value.trim(),
+          hoster: document.getElementById("serverHoster").value.trim(),
+          lat: document.getElementById("serverLat").value.trim(),
+          lon: document.getElementById("serverLon").value.trim(),
+        });
+        if (!res.ok || !data.ok) {
+          error.textContent = data.error || "Einrichtung fehlgeschlagen";
+          nextBtn.disabled = false;
+          return;
+        }
+        location.href = "/";
+      } catch (err) {
+        error.textContent = "Netzwerkfehler";
+        nextBtn.disabled = false;
+      }
+    });
+
+    backBtn.addEventListener("click", () => {
+      if (step > 1) showStep(step - 1);
+    });
+
+    fetch("/api/setup", { credentials: "same-origin" })
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        if (!data) return;
+        if (!data.needed) {
+          location.href = "/login";
+          return;
+        }
+        if (data.name) document.getElementById("serverName").value = data.name;
+        if (data.hoster) document.getElementById("serverHoster").value = data.hoster;
+        if (Number.isFinite(data.lat)) document.getElementById("serverLat").value = String(data.lat);
+        if (Number.isFinite(data.lon)) document.getElementById("serverLon").value = String(data.lon);
+      })
+      .catch(() => {});
+
+    const canvas = document.getElementById("loginMap");
+    const ctx = canvas.getContext("2d");
+    let features = [];
+    function paint() {
+      const light = document.documentElement.dataset.theme === "light";
+      const sea = light ? "#e7edf2" : "#0b0e11";
+      const land = light ? "#c5d0da" : "#3a4450";
+      const rect = canvas.getBoundingClientRect();
+      const dpr = Math.min(2, devicePixelRatio || 1);
+      canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+      canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+      const w = canvas.width;
+      const h = canvas.height;
+      let bw = w;
+      let bh = bw / 2;
+      if (bh < h) { bh = h; bw = bh * 2; }
+      const box = { x: (w - bw) / 2, y: (h - bh) / 2, w: bw, h: bh };
+      ctx.fillStyle = sea;
+      ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = land;
+      for (const feature of features) {
+        const geom = feature.geometry;
+        if (!geom) continue;
+        const polys = geom.type === "Polygon" ? [geom.coordinates] : geom.type === "MultiPolygon" ? geom.coordinates : [];
+        ctx.beginPath();
+        for (const poly of polys) {
+          for (const ring of poly) {
+            ring.forEach((pt, i) => {
+              const x = box.x + ((pt[0] + 180) / 360) * box.w;
+              const y = box.y + ((90 - pt[1]) / 180) * box.h;
+              if (i === 0) ctx.moveTo(x, y);
+              else ctx.lineTo(x, y);
+            });
+            ctx.closePath();
+          }
+        }
+        ctx.fill();
+      }
+    }
+    fetch("/world.geojson").then((res) => res.json()).then((geo) => {
+      features = geo.features || [];
+      paint();
+    }).catch(() => paint());
+    window.addEventListener("resize", paint);
+    showStep(1);
+  </script>
+</body>
+</html>

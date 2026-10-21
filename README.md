@@ -20,11 +20,14 @@ Die Flaggen unter `static/flags/` stammen aus [flag icons](https://github.com/li
 
 ## Start
 
-Im Ordner mit der Compose Datei, Zugangsdaten nur in der `.env` daneben:
+`.env.example` nach `.env` kopieren und `POSTGRES_PASSWORD` setzen. Das Konto für die Oberfläche wird nicht in dieser Datei angelegt.
 
 ```bash
+cp .env.example .env
 docker compose --env-file .env up -d --build
 ```
+
+Beim ersten Aufruf kommt die Einrichtung. Der Code dafür steht in `data/setup.code` und in der Ausgabe des Dienstes. Danach gibt es Benutzer, Passwort, Name und Standort. Der Code wird danach gelöscht.
 
 Ohne Docker, und ohne gesetzte Datenbankadresse, speichert Livemap in Sqlite:
 
@@ -32,9 +35,11 @@ Ohne Docker, und ohne gesetzte Datenbankadresse, speichert Livemap in Sqlite:
 python3 server.py
 ```
 
+Beispiele für Nginx und systemd liegen unter `examples/`.
+
 ## Einstellungen
 
-Alles über Umgebungsvariablen. Keine davon ist Pflicht.
+Alles über Umgebungsvariablen. Das erste Konto entsteht in der Einrichtung, nicht über eine Variable.
 
 | Variable | Bedeutung | Standard |
 | --- | --- | --- |

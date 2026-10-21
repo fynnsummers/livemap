@@ -3,6 +3,7 @@ __pycache__
 data/events.sqlite*
 data/f2b.offset
 data/login.txt
+data/setup.code
 pgdata
 .git
 

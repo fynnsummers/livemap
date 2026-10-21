@@ -1,0 +1,19 @@
+[Unit]
+Description=Livemap
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/livemap
+Environment=LIVEMAP_HOST=127.0.0.1
+Environment=LIVEMAP_PORT=8791
+Environment=LIVEMAP_LAT=52.52
+Environment=LIVEMAP_LON=13.405
+Environment=LIVEMAP_NGINX=/var/log/nginx/access.log
+Environment=LIVEMAP_F2B=/var/log/fail2ban.log
+ExecStart=/usr/bin/python3 /opt/livemap/server.py
+Restart=on-failure
+User=livemap
+SupplementaryGroups=adm
+
+[Install]
+WantedBy=multi-user.target
