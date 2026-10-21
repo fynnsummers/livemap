@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Livemap">
+  <defs>
+    <linearGradient id="plate" x1="8" y1="4" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1c2430"/>
+      <stop offset="1" stop-color="#0d1117"/>
+    </linearGradient>
+    <linearGradient id="arc" x1="10" y1="14" x2="46" y2="42" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7d93a8"/>
+      <stop offset="1" stop-color="#d7dee7"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="44" cy="38" r="14" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#c24b3c" stop-opacity=".55"/>
+      <stop offset="1" stop-color="#c24b3c" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#plate)"/>
+  <circle cx="32" cy="34" r="22" fill="none" stroke="#33404e" stroke-width="1.2"/>
+  <circle cx="32" cy="34" r="14.5" fill="none" stroke="#2a3542" stroke-width="1"/>
+  <path d="M18 40c3.2-8.4 8.1-13.2 14.4-13.8 5.2-.5 9.6 2.1 13.2 7.4" fill="none" stroke="#3d4d5e" stroke-width="3.2" stroke-linecap="round"/>
+  <path d="M20.5 36.5c2.4-5.6 6.1-8.7 10.5-9 4.1-.3 7.4 1.9 10.1 5.8" fill="none" stroke="#5b6d80" stroke-width="1.6" stroke-linecap="round"/>
+  <circle cx="44" cy="38" r="12" fill="url(#glow)"/>
+  <path d="M11 17c7.8 1.8 16.4 8.2 24.6 16.8" fill="none" stroke="url(#arc)" stroke-width="2.4" stroke-linecap="round"/>
+  <circle cx="11" cy="17" r="2.2" fill="#9eb0c0"/>
+  <rect x="40.2" y="34.2" width="7.6" height="7.6" fill="#e8edf2"/>
+  <rect x="41.4" y="35.4" width="5.2" height="5.2" fill="#c24b3c"/>
+</svg>

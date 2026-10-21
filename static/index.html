@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Livemap</title>
+  <meta name="description" content="Livemap zeigt Angriffe und Zugriffe auf deinen Server live auf einer Weltkarte.">
+  <meta name="theme-color" content="#3b3f44">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <link rel="icon" href="/favicon.png?v=4" type="image/png">
+  <link rel="apple-touch-icon" href="/favicon.png?v=4">
+  <link rel="stylesheet" href="/app.css?v=50">
+</head>
+<body class="panel-map">
+  <header>
+    <a class="brand" href="/">
+      <img class="brand-logo" src="/logo.png?v=4" alt="Livemap">
+    </a>
+    <div class="header-meta">
+      <span id="linkStatus" class="link-status is-boot" title="Verbindung">…</span>
+      <span id="rateLabel" class="rate-label" title="Treffer in der letzten Minute">–/min</span>
+      <div id="topStrip" class="top-strip" aria-label="Häufigste Herkunft"></div>
+    </div>
+    <div class="account" id="account">
+      <button type="button" id="accountBtn" class="account-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="accountMenu">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5.2" r="2.4" fill="currentColor"/><path fill="currentColor" d="M3.2 13.2c.6-2.3 2.3-3.4 4.8-3.4s4.2 1.1 4.8 3.4H3.2z"/></svg>
+        <span id="accountName">Konto</span>
+      </button>
+      <div class="account-menu" id="accountMenu" role="menu" hidden>
+        <button type="button" id="settingsBtn" role="menuitem">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M6.7 1.4h2.6l.3 1.7c.4.1.7.3 1 .6l1.6-.6 1.3 2.2-1.3 1.1c.1.3.1.6.1.9s0 .6-.1.9l1.3 1.1-1.3 2.2-1.6-.6c-.3.2-.6.4-1 .6l-.3 1.7H6.7l-.3-1.7a4 4 0 0 1-1-.6l-1.6.6-1.3-2.2 1.3-1.1a3 3 0 0 1 0-1.8L2.5 5.3l1.3-2.2 1.6.6c.3-.2.6-.4 1-.6l.3-1.7zM8 6.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6z"/></svg>
+          Einstellungen
+        </button>
+        <button type="button" id="logoutBtn" class="account-logout" role="menuitem">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.4 3.2H3.6v9.6h2.8"/><path d="M7 8h6"/><path d="M11 5.2 13.8 8 11 10.8"/></svg>
+          Ausloggen
+        </button>
+      </div>
+    </div>
+  </header>
+  <nav class="mobile-tabs" id="mobileTabs" aria-label="Ansicht">
+    <button type="button" data-panel="map" class="active">Karte</button>
+    <button type="button" data-panel="log">Log</button>
+  </nav>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <main>
+    <section class="stage" aria-label="Weltkarte">
+      <canvas id="map"></canvas>
+      <div id="flagLayer" class="flag-layer" hidden></div>
+      <div id="hostBadge" class="host-badge" hidden>
+        <img id="hostMark" alt="">
+        <span id="hostName"></span>
+      </div>
+      <p class="loading" id="loading">Logs werden gelesen …</p>
+      <p class="quiet" id="quiet" hidden>Im Fenster ist es ruhig.</p>
+      <div id="tip" class="tip" hidden></div>
+      <section id="inspect" class="inspect" hidden>
+        <div class="inspect-tools">
+          <button type="button" id="inspectCollapse" title="Einklappen" aria-label="Einklappen" aria-expanded="true">&lt;</button>
+          <button type="button" id="inspectClose" title="Schließen" aria-label="Schließen">×</button>
+        </div>
+        <div id="detail" class="detail"></div>
+      </section>
+      <section id="settings" class="settings" hidden>
+        <div class="settings-head">
+          <h2>Einstellungen</h2>
+          <button type="button" id="settingsClose">Schließen</button>
+        </div>
+        <div class="settings-nav" role="tablist">
+          <button type="button" data-tab="account" class="active">Konto</button>
+          <button type="button" data-tab="fail2ban">Fail2ban</button>
+          <button type="button" data-tab="traffic">Traffic</button>
+          <button type="button" data-tab="services">Dienste</button>
+          <button type="button" data-tab="general">Allgemein</button>
+        </div>
+        <div class="settings-body">
+          <section class="settings-panel" data-panel="account">
+            <p class="settings-user">Angemeldet als <strong id="settingsUser">Konto</strong></p>
+            <form id="settingsForm" autocomplete="off">
+              <label>Aktuelles Passwort
+                <input id="pwCurrent" type="password" name="current-password" autocomplete="current-password" required>
+              </label>
+              <label>Neues Passwort
+                <input id="pwNew" type="password" name="new-password" autocomplete="new-password" minlength="8" required>
+              </label>
+              <label>Wiederholen
+                <input id="pwAgain" type="password" name="confirm-password" autocomplete="new-password" minlength="8" required>
+              </label>
+              <div class="settings-row">
+                <button type="submit" class="solid" id="settingsSave">Passwort speichern</button>
+                <p id="settingsMsg" class="settings-msg" role="status"></p>
+              </div>
+            </form>
+          </section>
+          <section class="settings-panel" data-panel="fail2ban" hidden>
+            <div id="settingsFail2ban" class="settings-note">Wird gelesen …</div>
+          </section>
+          <section class="settings-panel" data-panel="traffic" hidden>
+            <div id="settingsTraffic" class="settings-note">Wird gelesen …</div>
+          </section>
+          <section class="settings-panel" data-panel="services" hidden>
+            <div id="settingsServices" class="settings-note">Wird gelesen …</div>
+          </section>
+          <section class="settings-panel" data-panel="general" hidden>
+            <div id="settingsGeneral" class="settings-note">Wird gelesen …</div>
+          </section>
+        </div>
+      </section>
+      <section id="countryCard" class="country-card" hidden>
+        <h2 id="countryName"></h2>
+        <p class="country-figures"><strong id="countryWin">0</strong> in dieser Session · <strong id="countryAll">0</strong> insgesamt</p>
+        <dl id="countryMeta" class="country-meta"></dl>
+        <ul id="countryKinds"></ul>
+        <ul id="countryTops" class="country-tops"></ul>
+        <div class="country-actions">
+          <button type="button" id="countryMapsBtn" class="maps-link">
+            <img class="gmaps-icon" src="/marks/gmaps.svg" width="14" height="14" alt="">
+            Google Maps
+          </button>
+        </div>
+      </section>
+    </section>
+    <aside>
+      <div class="summary">
+        <div class="summary-top">
+          <div class="stats">
+            <div class="stat"><strong id="statWindow">–</strong><span>Fenster</span></div>
+            <div class="stat"><strong id="statHour">–</strong><span>Stunde</span></div>
+            <div class="stat"><strong id="statCountries">–</strong><span>Länder</span></div>
+            <div class="stat"><strong id="statIps">–</strong><span>IPs</span></div>
+          </div>
+          <div class="summary-side">
+            <p class="clock" id="clock">–</p>
+            <button type="button" id="exportBtn" class="export-btn" title="Aktuelles Fenster als CSV">CSV</button>
+          </div>
+        </div>
+        <div id="topIps" class="top-ips" aria-label="Auffälligste IPs"></div>
+      </div>
+      <div class="loghead">
+        <div class="roles" id="roles" role="group" aria-label="Herkunft"></div>
+        <div class="filters" id="filters" role="group" aria-label="Art der Zugriffe"></div>
+        <div class="fold" id="domainFold">
+          <button type="button" id="domainFoldBtn" class="fold-toggle" aria-expanded="true" aria-controls="domains">
+            <span>Domains</span>
+          </button>
+          <div class="domains" id="domains" role="group" aria-label="Domain"></div>
+        </div>
+        <label class="search-wrap">
+          <span class="sr-only">Suche</span>
+          <input id="searchBox" type="search" placeholder="IP, Land, Pfad …" autocomplete="off" spellcheck="false">
+        </label>
+      </div>
+      <ol class="feed" id="feed"></ol>
+    </aside>
+  </main>
+  <div id="ctx" class="ctx" hidden></div>
+
+  <footer id="controls">
+    <button type="button" id="controlsFold" class="edge-fold" aria-expanded="true" aria-controls="controls" title="Steuerung einklappen">
+      <span class="edge-fold-label">Steuerung</span>
+    </button>
+    <div class="transport">
+      <button type="button" id="liveBtn" class="icon-btn solid">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="4.5" fill="currentColor"/></svg>
+        <span>Live</span>
+      </button>
+      <button type="button" id="playBtn" class="icon-btn">
+        <svg class="icon-play" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M4 2.8v10.4L13.2 8z"/></svg>
+        <svg class="icon-pause" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M3.5 2.5h3v11h-3zm6 0h3v11h-3z"/></svg>
+        <span id="playLabel">Replay</span>
+      </button>
+      <div class="speeds" id="speeds" role="group" aria-label="Tempo"></div>
+      <div class="windows" id="windows" role="group" aria-label="Zeitfenster"></div>
+    </div>
+    <div class="wave-wrap">
+      <div id="waveMarks" class="wave-marks" aria-hidden="true"></div>
+      <canvas id="wave" aria-label="Zeitstrahl mit Angriffsspitzen"></canvas>
+      <span id="cursorLabel">–</span>
+    </div>
+  </footer>
+  <script src="/app.js?v=45"></script>
+</body>
+</html>

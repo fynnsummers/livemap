@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+pgdata/
+data/events.sqlite
+data/events.sqlite-*
+data/f2b.offset
+data/livemap.db
+data/login.txt
+.env
+*.env

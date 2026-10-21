@@ -1,0 +1,8 @@
+__pycache__
+*.pyc
+data/events.sqlite*
+data/f2b.offset
+data/login.txt
+pgdata
+.git
+
