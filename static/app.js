@@ -386,12 +386,12 @@ function themePaint() {
     };
   }
   return {
-    sea: "#1d2023",
-    land: "#4c5662",
-    edge: "#5c6876",
+    sea: "#0b0e11",
+    land: "#3a4450",
+    edge: "#4a5664",
     ink: "#d8dde3",
-    grid: "rgba(140, 155, 170, 0.18)",
-    stroke: "rgba(170, 185, 200, 0.32)",
+    grid: "rgba(122, 137, 152, 0.2)",
+    stroke: "rgba(152, 167, 182, 0.34)",
     flash: "#c5d0db",
   };
 }
@@ -1781,7 +1781,7 @@ function applyTheme(theme) {
   heatStamp = 0;
   heatCam = "";
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute("content", next === "light" ? "#f3f5f7" : "#212428");
+  if (meta) meta.setAttribute("content", next === "light" ? "#f3f5f7" : "#0f1216");
   document.getElementById("themeDark")?.classList.toggle("active", next === "dark");
   document.getElementById("themeLight")?.classList.toggle("active", next === "light");
 }

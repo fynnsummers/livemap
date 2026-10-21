@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Livemap · Anmelden</title>
-  <meta name="theme-color" content="#212428">
+  <meta name="theme-color" content="#0f1216">
   <script>
     try {
       document.documentElement.dataset.theme = localStorage.getItem("livemap.theme") === "light" ? "light" : "dark";
@@ -12,7 +12,7 @@
   </script>
   <meta name="robots" content="noindex,nofollow">
   <link rel="icon" href="/favicon.png?v=4" type="image/png">
-  <link rel="stylesheet" href="/app.css?v=52">
+  <link rel="stylesheet" href="/app.css?v=53">
 </head>
 <body class="login-page">
   <canvas id="loginMap" class="login-map" aria-hidden="true"></canvas>
@@ -222,7 +222,7 @@
       const light = document.documentElement.dataset.theme === "light";
       return light
         ? { sea: "#e7edf2", land: "#c5d0da", grid: "rgba(90, 104, 118, 0.28)", stroke: "rgba(70, 84, 98, 0.4)" }
-        : { sea: "#1d2023", land: "#4c5662", grid: "rgba(140, 155, 170, 0.18)", stroke: "rgba(170, 185, 200, 0.32)" };
+        : { sea: "#0b0e11", land: "#3a4450", grid: "rgba(122, 137, 152, 0.2)", stroke: "rgba(152, 167, 182, 0.34)" };
     }
 
     function ensureMap(box) {
