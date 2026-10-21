@@ -4,21 +4,28 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Livemap · Anmelden</title>
-  <meta name="theme-color" content="#3b3f44">
+  <meta name="theme-color" content="#212428">
+  <script>
+    try {
+      document.documentElement.dataset.theme = localStorage.getItem("livemap.theme") === "light" ? "light" : "dark";
+    } catch (err) { /* ignore */ }
+  </script>
   <meta name="robots" content="noindex,nofollow">
   <link rel="icon" href="/favicon.png?v=4" type="image/png">
-  <link rel="stylesheet" href="/app.css?v=50">
+  <link rel="stylesheet" href="/app.css?v=52">
 </head>
 <body class="login-page">
   <canvas id="loginMap" class="login-map" aria-hidden="true"></canvas>
   <div class="login-veil" aria-hidden="true"></div>
   <header>
     <a class="brand" href="/login">
-      <img class="brand-logo" src="/logo.png?v=4" alt="Livemap">
+      <img class="brand-logo logo-for-dark" src="/logo-dark.png?v=5" alt="Livemap">
+      <img class="brand-logo logo-for-light" src="/logo.png?v=5" alt="">
     </a>
   </header>
   <div class="login-hero">
-    <img class="login-hero-logo" src="/logo.png?v=4" alt="Livemap">
+    <img class="login-hero-logo logo-for-dark" src="/logo-dark.png?v=5" alt="Livemap">
+    <img class="login-hero-logo logo-for-light" src="/logo.png?v=5" alt="">
     <p>Livemap zeigt Zugriffe und Angriffe auf den eigenen Server live auf einer Weltkarte. Du siehst, woher sie kommen, wann sie kommen und was passiert. Die Software ist Open Source.</p>
     <a class="github-btn" href="https://github.com/fynnsummers/livemap" target="_blank" rel="noopener noreferrer">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.7 7.7 0 0 1 8 3.87c.68.003 1.36.092 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -211,8 +218,16 @@
       }
     }
 
+    function demoPaint() {
+      const light = document.documentElement.dataset.theme === "light";
+      return light
+        ? { sea: "#e7edf2", land: "#c5d0da", grid: "rgba(90, 104, 118, 0.28)", stroke: "rgba(70, 84, 98, 0.4)" }
+        : { sea: "#1d2023", land: "#4c5662", grid: "rgba(140, 155, 170, 0.18)", stroke: "rgba(170, 185, 200, 0.32)" };
+    }
+
     function ensureMap(box) {
-      const key = `${canvas.width}x${canvas.height}|${box.x},${box.y},${box.w},${box.h}`;
+      const paint = demoPaint();
+      const key = `${canvas.width}x${canvas.height}|${box.x},${box.y},${box.w},${box.h}|${document.documentElement.dataset.theme || "dark"}`;
       if (mapLayer && mapKey === key) return;
       mapKey = key;
       if (!mapLayer) mapLayer = document.createElement("canvas");
@@ -223,9 +238,9 @@
       const g = mapLayer.getContext("2d");
       g.setTransform(1, 0, 0, 1, 0, 0);
       g.clearRect(0, 0, mapLayer.width, mapLayer.height);
-      g.fillStyle = "#2f3235";
+      g.fillStyle = paint.sea;
       g.fillRect(0, 0, mapLayer.width, mapLayer.height);
-      g.strokeStyle = "rgba(120, 135, 150, 0.16)";
+      g.strokeStyle = paint.grid;
       g.lineWidth = 1;
       g.beginPath();
       for (let lon = -180; lon <= 180; lon += 30) {
@@ -239,8 +254,8 @@
         g.lineTo(box.x + box.w, y);
       }
       g.stroke();
-      g.fillStyle = "#5e6874";
-      g.strokeStyle = "rgba(150, 165, 180, 0.28)";
+      g.fillStyle = paint.land;
+      g.strokeStyle = paint.stroke;
       g.lineWidth = 0.8;
       for (const feature of features) {
         g.beginPath();

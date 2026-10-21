@@ -61,6 +61,7 @@ PUBLIC_PATHS = {
     "/favicon.png",
     "/logo.svg",
     "/logo.png",
+    "/logo-dark.png",
     "/app.css",
 }
 
@@ -1363,7 +1364,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/world.geojson":
             self.file(DATA / "world.geojson", "application/geo+json", "public, max-age=86400")
             return
-        if path in ("/favicon.svg", "/logo.svg", "/favicon.png", "/logo.png"):
+        if path in ("/favicon.svg", "/logo.svg", "/favicon.png", "/logo.png", "/logo-dark.png"):
             name = path.lstrip("/")
             kind = "image/png" if name.endswith(".png") else "image/svg+xml"
             self.file(STATIC / name, kind, "public, max-age=86400")

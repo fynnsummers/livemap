@@ -372,8 +372,33 @@ function traceGeometry(geometry, box, context = ctx) {
 let mapLayer = null;
 let mapLayerKey = "";
 
+function themePaint() {
+  const light = document.documentElement.dataset.theme === "light";
+  if (light) {
+    return {
+      sea: "#e7edf2",
+      land: "#c5d0da",
+      edge: "#aebcc8",
+      ink: "#1c2126",
+      grid: "rgba(90, 104, 118, 0.28)",
+      stroke: "rgba(70, 84, 98, 0.4)",
+      flash: "#4c5966",
+    };
+  }
+  return {
+    sea: "#1d2023",
+    land: "#4c5662",
+    edge: "#5c6876",
+    ink: "#d8dde3",
+    grid: "rgba(140, 155, 170, 0.18)",
+    stroke: "rgba(170, 185, 200, 0.32)",
+    flash: "#c5d0db",
+  };
+}
+
 function ensureMapLayer(box) {
-  const key = `${canvas.width}x${canvas.height}|${box.x},${box.y},${box.w},${box.h}|${cam.lon.toFixed(2)}|${cam.lat.toFixed(2)}|${cam.scale.toFixed(3)}`;
+  const paint = themePaint();
+  const key = `${canvas.width}x${canvas.height}|${box.x},${box.y},${box.w},${box.h}|${cam.lon.toFixed(2)}|${cam.lat.toFixed(2)}|${cam.scale.toFixed(3)}|${document.documentElement.dataset.theme || "dark"}`;
   if (mapLayer && mapLayerKey === key) return;
   mapLayerKey = key;
   if (!mapLayer) mapLayer = document.createElement("canvas");
@@ -384,9 +409,9 @@ function ensureMapLayer(box) {
   const mctx = mapLayer.getContext("2d");
   mctx.setTransform(1, 0, 0, 1, 0, 0);
   mctx.clearRect(0, 0, mapLayer.width, mapLayer.height);
-  mctx.fillStyle = "#2f3235";
+  mctx.fillStyle = paint.sea;
   mctx.fillRect(box.x, box.y, box.w, box.h);
-  mctx.strokeStyle = "rgba(120, 135, 150, 0.14)";
+  mctx.strokeStyle = paint.grid;
   mctx.lineWidth = 1;
   mctx.beginPath();
   for (let lon = -180; lon <= 180; lon += 30) {
@@ -400,8 +425,8 @@ function ensureMapLayer(box) {
     mctx.lineTo(box.x + box.w, y);
   }
   mctx.stroke();
-  mctx.fillStyle = "#5e6874";
-  mctx.strokeStyle = "rgba(150, 165, 180, 0.28)";
+  mctx.fillStyle = paint.land;
+  mctx.strokeStyle = paint.stroke;
   mctx.lineWidth = 0.8;
   for (const feature of state.features) {
     mctx.beginPath();
@@ -422,14 +447,15 @@ function drawMap(box) {
     feature.flash = Math.max(0, (feature.flash || 0) - (reduced ? 0.1 : 0.04));
     const flash = Math.min(1, feature.flash || 0);
     if (feature.edge <= 0 && flash <= 0) continue;
-    let fill = feature.edge > 0 ? mixColor("#5e6874", "#6e7a88", feature.edge) : "#5e6874";
-    if (flash > 0) fill = mixColor(fill, "#c5d0db", flash * 0.85);
+    const paint = themePaint();
+    let fill = feature.edge > 0 ? mixColor(paint.land, paint.edge, feature.edge) : paint.land;
+    if (flash > 0) fill = mixColor(fill, paint.flash, flash * 0.85);
     ctx.beginPath();
     traceGeometry(feature.geometry, box);
     ctx.fillStyle = fill;
     ctx.fill();
     ctx.lineWidth = 0.8;
-    ctx.strokeStyle = "rgba(150, 165, 180, 0.28)";
+    ctx.strokeStyle = paint.stroke;
     ctx.stroke();
   }
   for (const feature of state.features) {
@@ -716,7 +742,7 @@ function eventHeatWeight(row) {
 
 function mapHeatColor(t) {
   const u = Math.min(1, Math.max(0, t));
-  if (u < 0.35) return mixColor("#5e6874", "#6d8ea3", u / 0.35);
+  if (u < 0.35) return mixColor(themePaint().land, "#6d8ea3", u / 0.35);
   if (u < 0.7) return mixColor("#6d8ea3", "#c9a24a", (u - 0.35) / 0.35);
   return mixColor("#c9a24a", "#c24b3c", (u - 0.7) / 0.3);
 }
@@ -1075,7 +1101,7 @@ function render() {
   easeCam(now);
   const box = viewBox();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "#2f3235";
+  ctx.fillStyle = themePaint().sea;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.save();
   ctx.beginPath();
@@ -1274,7 +1300,7 @@ function drawWave() {
     });
   }
   wctx.clearRect(0, 0, width, height);
-  wctx.fillStyle = "#2f3235";
+  wctx.fillStyle = themePaint().sea;
   wctx.fillRect(0, 0, width, height);
   const x0 = ((state.cursor - state.windowSec - start) / span) * width;
   const x1 = ((state.cursor - start) / span) * width;
@@ -1745,6 +1771,19 @@ function exportWindowCsv() {
   a.remove();
   URL.revokeObjectURL(url);
   showToast("CSV exportiert", `${rows.length} Zeilen`, "ok");
+}
+
+function applyTheme(theme) {
+  const next = theme === "light" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("livemap.theme", next); } catch (err) { /* ignore */ }
+  mapLayerKey = "";
+  heatStamp = 0;
+  heatCam = "";
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", next === "light" ? "#f3f5f7" : "#212428");
+  document.getElementById("themeDark")?.classList.toggle("active", next === "dark");
+  document.getElementById("themeLight")?.classList.toggle("active", next === "light");
 }
 
 function loadPrefs() {
@@ -3197,6 +3236,10 @@ addEventListener("keydown", (event) => {
 
 addEventListener("resize", resize);
 loadPrefs();
+applyTheme(localStorage.getItem("livemap.theme"));
+document.querySelectorAll("[data-theme-pick]").forEach((button) => {
+  button.addEventListener("click", () => applyTheme(button.dataset.themePick));
+});
 buildControls();
 syncLive();
 syncPlay();
