@@ -3079,7 +3079,7 @@ body.panel-log .brand img {
 body.panel-map main,
 body.panel-log main {
   gap: 8px;
-  grid-template-columns: minmax(0, 1fr) 312px;
+  grid-template-columns: minmax(0, 1fr) clamp(440px, 30vw, 760px);
 }
 
 body.panel-map button,

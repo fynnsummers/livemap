@@ -356,10 +356,11 @@ function viewBox() {
   const w = canvas.width;
   const h = canvas.height;
   const ratio = 2;
-  let bw = w - 28;
+  const pad = 8;
+  let bw = w - pad * 2;
   let bh = bw / ratio;
-  if (bh > h - 28) {
-    bh = h - 28;
+  if (bh > h - pad * 2) {
+    bh = h - pad * 2;
     bw = bh * ratio;
   }
   return { x: (w - bw) / 2, y: (h - bh) / 2, w: bw, h: bh };
