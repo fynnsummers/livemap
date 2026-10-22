@@ -2847,33 +2847,25 @@ body.login-concept .field.plain input { padding-left: 12px; }
 
 .hoster-pick { position: relative; }
 
-.hoster-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
-  background: rgba(8, 11, 15, 0.65);
-  color: var(--ink);
-  font: inherit;
-  font-size: 14px;
-  text-align: left;
-  cursor: pointer;
+body.login-concept .field.plain .hoster-pick input {
+  padding-left: 34px;
+  padding-right: 36px;
 }
 
-.hoster-btn img,
-.hoster-menu button img {
+.hoster-chosen {
+  position: absolute;
+  right: 10px;
+  top: 50%;
   width: 16px;
   height: 16px;
-  flex: none;
+  margin-top: -8px;
   object-fit: contain;
+  pointer-events: none;
 }
 
 .hoster-menu {
   position: absolute;
-  z-index: 5;
+  z-index: 40;
   left: 0;
   right: 0;
   top: calc(100% + 4px);
@@ -2884,24 +2876,30 @@ body.login-concept .field.plain input { padding-left: 12px; }
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
 }
 
-.hoster-menu input {
-  width: 100%;
-  box-sizing: border-box;
-  margin: 0 0 6px;
-  padding: 8px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 6px;
-  background: rgba(8, 11, 15, 0.65);
-  color: var(--ink);
-  font: inherit;
-  font-size: 13px;
-}
-
-.hoster-menu input:focus { outline: none; border-color: #3d6eae; }
-
 #hosterList {
   max-height: 220px;
-  overflow: auto;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #6a7682 transparent;
+}
+
+#hosterList::-webkit-scrollbar {
+  width: 10px;
+}
+
+#hosterList::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 4px 0;
+}
+
+#hosterList::-webkit-scrollbar-thumb {
+  background: #5c6772;
+  border: 2px solid #141a21;
+  border-radius: 99px;
+}
+
+#hosterList::-webkit-scrollbar-thumb:hover {
+  background: #7d8b98;
 }
 
 .hoster-menu button {
@@ -2921,6 +2919,22 @@ body.login-concept .field.plain input { padding-left: 12px; }
   cursor: pointer;
 }
 
+.hoster-menu button img {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  padding: 2px;
+  box-sizing: border-box;
+  border-radius: 4px;
+  background: #1c242d;
+  object-fit: contain;
+}
+
+.hoster-menu button:hover,
+.hoster-menu button.is-active {
+  background: rgba(255, 255, 255, 0.06);
+}
+
 .hoster-menu button.is-selected {
   font-weight: 700;
   background: rgba(47, 111, 224, 0.16);
@@ -2932,11 +2946,23 @@ body.login-concept .field.plain input { padding-left: 12px; }
   font-size: 12px;
 }
 
-html[data-theme="light"] .hoster-btn,
-html[data-theme="light"] .hoster-menu,
-html[data-theme="light"] .hoster-menu input {
+html[data-theme="light"] .hoster-menu {
   background: #fff;
   border-color: rgba(20, 28, 36, 0.12);
+}
+
+html[data-theme="light"] #hosterList {
+  scrollbar-color: #8b97a3 transparent;
+}
+
+html[data-theme="light"] #hosterList::-webkit-scrollbar-thumb {
+  background: #8b97a3;
+  border-color: #fff;
+}
+
+html[data-theme="light"] .hoster-menu button:hover,
+html[data-theme="light"] .hoster-menu button.is-active {
+  background: rgba(20, 28, 36, 0.06);
 }
 
 body.login-concept .field input:focus {

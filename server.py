@@ -283,7 +283,7 @@ ATTACK_KINDS = {"ssh", "scan", "flood", "login", "mail", "probe"}
 BRANDS = {
     "cloudflare", "google", "amazon", "microsoft", "fastly", "digitalocean", "hetzner", "ovh",
     "akamai", "meta", "apple", "github", "oracle", "linode", "vultr", "contabo", "leaseweb",
-    "alibaba", "tencent", "ionos", "godaddy", "rackspace", "net",
+    "alibaba", "tencent", "ionos", "godaddy", "rackspace", "strato", "net",
 }
 HOSTERS = {
     "akamai": "Akamai",
@@ -306,6 +306,7 @@ HOSTERS = {
     "oracle": "Oracle",
     "ovh": "OVH",
     "rackspace": "Rackspace",
+    "strato": "Strato",
     "tencent": "Tencent",
     "vultr": "Vultr",
 }
