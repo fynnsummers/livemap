@@ -594,7 +594,10 @@ def verify_password(password: str, stored: str) -> bool:
         return False
     if algo != "scrypt":
         return False
-    check = hash_password(password, bytes.fromhex(salt_hex))
+    try:
+        check = hash_password(password, bytes.fromhex(salt_hex))
+    except (ValueError, TypeError, MemoryError):
+        return False
     return hmac.compare_digest(check, stored)
 
 
@@ -602,15 +605,25 @@ def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def login_rate_ok(ip: str) -> bool:
+def login_rate_ok(ip: str, username: str = "") -> bool:
     now = time.time()
+    keys = [f"ip:{ip or '-'}"]
+    user = (username or "").strip().lower()
+    if user:
+        keys.append(f"user:{user}")
     with LOGIN_LOCK:
-        hits = [t for t in LOGIN_HITS.get(ip, []) if now - t < 900]
-        if len(hits) >= 12:
-            LOGIN_HITS[ip] = hits
-            return False
-        hits.append(now)
-        LOGIN_HITS[ip] = hits
+        for key in keys:
+            hits = [t for t in LOGIN_HITS.get(key, []) if now - t < 900]
+            if len(hits) >= 12:
+                LOGIN_HITS[key] = hits
+                return False
+        for key in keys:
+            hits = [t for t in LOGIN_HITS.get(key, []) if now - t < 900]
+            hits.append(now)
+            LOGIN_HITS[key] = hits
+        if len(LOGIN_HITS) > 4000:
+            for old_key in list(LOGIN_HITS)[:800]:
+                LOGIN_HITS.pop(old_key, None)
         return True
 
 
@@ -790,8 +803,8 @@ def ensure_admin_user():
         if not ADMIN_PASSWORD:
             return
         DB.execute(
-            "INSERT INTO users (username, password_hash, created_at) VALUES (?,?,?)",
-            (ADMIN_USER, hash_password(ADMIN_PASSWORD), int(time.time())),
+            "INSERT INTO users (username, password_hash, created_at, role) VALUES (?,?,?,?)",
+            (ADMIN_USER, hash_password(ADMIN_PASSWORD), int(time.time()), "admin"),
         )
         DB.commit()
     print(f"admin angelegt: {ADMIN_USER}", flush=True)
@@ -827,7 +840,7 @@ def session_user(token: str | None):
     now = int(time.time())
     with db_lock:
         row = DB.execute(
-            """SELECT u.id, u.username, COALESCE(u.role, 'admin'), s.expires_at
+            """SELECT u.id, u.username, COALESCE(u.role, 'viewer'), s.expires_at
                FROM sessions s JOIN users u ON u.id = s.user_id
                WHERE s.token_hash = ? LIMIT 1""",
             (token_hash(token),),
@@ -838,7 +851,7 @@ def session_user(token: str | None):
             DB.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash(token),))
             DB.commit()
             return None
-    return {"id": row[0], "username": row[1], "role": row[2] or "admin"}
+    return {"id": row[0], "username": row[1], "role": row[2] or "viewer"}
 
 
 def parse_cookies(handler):
@@ -1124,6 +1137,33 @@ def clip(value, limit):
     return value
 
 
+INVITE_PATH_RE = re.compile(r"(?i)^(/invite/)([^/?#\s]+)(.*)$")
+SENSITIVE_QUERY_RE = re.compile(
+    r"(?i)([?&](?:token|code|password|passwd|pwd|secret|key|auth|session|invite)=)([^&\s#]*)"
+)
+
+
+def sanitize_path(path: str) -> str:
+    text = path or "/"
+    match = INVITE_PATH_RE.match(text)
+    if match:
+        text = f"{match.group(1)}[redacted]{match.group(3)}"
+    text = SENSITIVE_QUERY_RE.sub(r"\1[redacted]", text)
+    return clip(text, 180)
+
+
+def sanitize_hit(row: dict, full: bool = True) -> dict:
+    item = dict(row)
+    item["path"] = sanitize_path(item.get("path") or "/")
+    if not full:
+        path = item["path"]
+        if "?" in path:
+            item["path"] = path.split("?", 1)[0] + "?[redacted]"
+        item["referer"] = ""
+        item["ua"] = ""
+    return item
+
+
 def log_host(path):
     name = path.name
     if name in FILE_HOSTS:
@@ -1239,7 +1279,7 @@ def make_hit(ts, ip, kind, method="", path="", status=0, size=0, referer="", ua=
         "lat": lat,
         "lon": lon,
         "method": method,
-        "path": clip(path, 180),
+        "path": sanitize_path(path),
         "status": int(status or 0),
         "bytes": int(size or 0),
         "referer": clip(referer, 160),
@@ -1341,7 +1381,12 @@ def import_recent_hits():
 
 
 def publish(row):
-    payload = json.dumps(row, ensure_ascii=False)
+    item = dict(row)
+    if "path" in item:
+        item["path"] = sanitize_path(item.get("path") or "/")
+    if "referer" in item:
+        item["referer"] = SENSITIVE_QUERY_RE.sub(r"\1[redacted]", item.get("referer") or "")
+    payload = json.dumps(item, ensure_ascii=False)
     with sub_lock:
         dead = []
         for sub in subscribers:
@@ -1580,6 +1625,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Location", location)
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", "0")
+        self.security_headers()
         self.end_headers()
 
     def do_HEAD(self):
@@ -1802,13 +1848,13 @@ class Handler(BaseHTTPRequestHandler):
             if row:
                 uid = row[0]
                 DB.execute(
-                    "UPDATE users SET username = ?, password_hash = ? WHERE id = ?",
-                    (username, hashed, uid),
+                    "UPDATE users SET username = ?, password_hash = ?, role = ? WHERE id = ?",
+                    (username, hashed, "admin", uid),
                 )
             else:
                 DB.execute(
-                    "INSERT INTO users (username, password_hash, created_at) VALUES (?,?,?)",
-                    (username, hashed, now),
+                    "INSERT INTO users (username, password_hash, created_at, role) VALUES (?,?,?,?)",
+                    (username, hashed, now, "admin"),
                 )
                 uid = DB.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()[0]
             DB.execute("DELETE FROM sessions")
@@ -1837,15 +1883,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Set-Cookie", session_cookie_header(token, self))
+        self.security_headers()
         self.end_headers()
         if not getattr(self, "_head_only", False):
             self.wfile.write(payload)
 
     def login(self):
         ip = client_ip(self)
-        if not login_rate_ok(ip):
-            self.json_error(429, "Zu viele Versuche – später erneut")
-            return
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0 or length > 4000:
             self.json_error(400, "Leerer Request")
@@ -1857,6 +1901,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         username = (body.get("username") or "").strip()
         password = body.get("password") or ""
+        if not login_rate_ok(ip, username):
+            self.json_error(429, "Zu viele Versuche – später erneut")
+            return
         if not username or not password:
             self.json_error(400, "Benutzer und Passwort nötig")
             return
@@ -1877,6 +1924,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Set-Cookie", session_cookie_header(token, self, remember=remember))
+        self.security_headers()
         self.end_headers()
         if not getattr(self, "_head_only", False):
             self.wfile.write(payload)
@@ -1893,11 +1941,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         current = body.get("current") or ""
         new = body.get("password") or ""
-        if len(new) < 8:
-            self.json_error(400, "Mindestens 8 Zeichen")
-            return
         if new == current:
             self.json_error(400, "Neues Passwort ist identisch")
+            return
+        rank, _label = password_rank(new, self.user.get("username") or "")
+        if rank < 3:
+            self.json_error(400, "Passwort ist zu schwach")
             return
         with db_lock:
             row = DB.execute(
@@ -1908,11 +1957,19 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(0.35)
             self.json_error(400, "Aktuelles Passwort stimmt nicht")
             return
+        keep = token_hash(parse_cookies(self).get(SESSION_COOKIE) or "")
         with db_lock:
             DB.execute(
                 "UPDATE users SET password_hash = ? WHERE id = ?",
                 (hash_password(new), self.user["id"]),
             )
+            if keep:
+                DB.execute(
+                    "DELETE FROM sessions WHERE user_id = ? AND token_hash != ?",
+                    (self.user["id"], keep),
+                )
+            else:
+                DB.execute("DELETE FROM sessions WHERE user_id = ?", (self.user["id"],))
             DB.commit()
         self.bytes(b'{"ok":true}', "application/json; charset=utf-8")
 
@@ -1994,6 +2051,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Set-Cookie", session_cookie_header(session, self, remember=True))
+        self.security_headers()
         self.end_headers()
         if not getattr(self, "_head_only", False):
             self.wfile.write(payload)
@@ -2004,7 +2062,7 @@ class Handler(BaseHTTPRequestHandler):
         now = int(time.time())
         with db_lock:
             users = DB.execute(
-                "SELECT username, COALESCE(role, 'admin'), created_at FROM users ORDER BY id"
+                "SELECT username, COALESCE(role, 'viewer'), created_at FROM users ORDER BY id"
             ).fetchall()
             invites = DB.execute(
                 """SELECT username, created_at, expires_at FROM invites
@@ -2014,7 +2072,7 @@ class Handler(BaseHTTPRequestHandler):
         payload = json.dumps({
             "ok": True,
             "users": [
-                {"username": row[0], "role": row[1] or "admin", "created_at": int(row[2] or 0)}
+                {"username": row[0], "role": row[1] or "viewer", "created_at": int(row[2] or 0)}
                 for row in users
             ],
             "invites": [
@@ -2090,7 +2148,27 @@ class Handler(BaseHTTPRequestHandler):
             self.json_error(400, "JSON ungültig")
             return
         username = (body.get("username") or "").strip()
+        if not username:
+            self.json_error(400, "Benutzer fehlt")
+            return
+        if username.lower() == (self.user.get("username") or "").lower():
+            self.json_error(400, "Das eigene Konto bleibt")
+            return
         with db_lock:
+            row = DB.execute(
+                "SELECT id, COALESCE(role, 'viewer') FROM users WHERE username = ?",
+                (username,),
+            ).fetchone()
+            if row:
+                if (row[1] or "viewer") == "admin":
+                    admins = DB.execute(
+                        "SELECT COUNT(*) FROM users WHERE COALESCE(role, 'viewer') = 'admin'"
+                    ).fetchone()
+                    if admins and int(admins[0] or 0) <= 1:
+                        self.json_error(400, "Der letzte Administrator bleibt")
+                        return
+                DB.execute("DELETE FROM sessions WHERE user_id = ?", (row[0],))
+                DB.execute("DELETE FROM users WHERE id = ?", (row[0],))
             DB.execute("DELETE FROM invites WHERE username = ? AND used_at IS NULL", (username,))
             DB.commit()
         self.bytes(b'{"ok":true}', "application/json; charset=utf-8")
@@ -2120,6 +2198,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Set-Cookie", session_cookie_header("", self, clear=True))
+        self.security_headers()
         self.end_headers()
         if not getattr(self, "_head_only", False):
             self.wfile.write(payload)
@@ -2133,6 +2212,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Set-Cookie", session_cookie_header("", self, clear=True))
+        self.security_headers()
         self.end_headers()
         if not getattr(self, "_head_only", False):
             self.wfile.write(payload)
@@ -2143,6 +2223,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-cache")
+        self.security_headers()
         self.end_headers()
         if not getattr(self, "_head_only", False):
             self.wfile.write(payload)
@@ -2202,12 +2283,28 @@ class Handler(BaseHTTPRequestHandler):
         ).encode()
         self.bytes(payload, "application/json; charset=utf-8")
 
+    def security_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; "
+            "object-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; connect-src 'self'; font-src 'self'; "
+            "worker-src 'self'; upgrade-insecure-requests",
+        )
+        if request_secure(self):
+            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+
     def bytes(self, data, content_type, extra=None):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         if not (extra and "Cache-Control" in extra):
             self.send_header("Cache-Control", "no-cache")
+        self.security_headers()
         if extra:
             for key, value in extra.items():
                 self.send_header(key, value)
@@ -2229,7 +2326,6 @@ class Handler(BaseHTTPRequestHandler):
         payload = json.dumps({
             "name": SERVER.get("name") or "",
             "hostname": SERVER.get("hostname") or "",
-            "ipv4": SERVER.get("ipv4") or "",
             "hoster": SERVER.get("hoster_name") or SERVER.get("hoster") or "",
             "lat": SERVER.get("lat"),
             "lon": SERVER.get("lon"),
@@ -2255,26 +2351,38 @@ class Handler(BaseHTTPRequestHandler):
                           method, path, status, bytes, referer, ua, host
                    FROM hits ORDER BY ts ASC"""
             ).fetchall()
-        hits = [
-            {
+        full = (self.user.get("role") or "viewer") == "admin"
+        hits = []
+        for r in hit_rows:
+            row = {
                 "ts": r[0], "ip": r[1], "kind": r[2], "role": r[3], "org": r[4] or "",
                 "org_name": r[5] or "", "cc": r[6] or "", "name": r[7] or "",
                 "lat": r[8], "lon": r[9], "method": r[10] or "", "path": r[11] or "",
                 "status": r[12] or 0, "bytes": r[13] or 0, "referer": r[14] or "",
                 "ua": r[15] or "", "host": r[16] or "",
             }
-            for r in hit_rows
-        ]
+            hits.append(sanitize_hit(row, full=full))
         SERVER["version"] = app_version()
+        public_server = dict(SERVER)
+        if not full:
+            public_server = {
+                "name": SERVER.get("name") or "",
+                "hostname": SERVER.get("hostname") or "",
+                "version": SERVER.get("version") or "",
+                "hoster": SERVER.get("hoster") or "",
+                "hoster_name": SERVER.get("hoster_name") or "",
+                "lat": SERVER.get("lat"),
+                "lon": SERVER.get("lon"),
+            }
         payload = json.dumps(
             {
-                "server": SERVER,
+                "server": public_server if not full else SERVER,
                 "events": events,
                 "hits": hits,
                 "user": {
                     "username": self.user["username"],
                     "ip": client_ip(self),
-                    "role": self.user.get("role") or "admin",
+                    "role": self.user.get("role") or "viewer",
                 },
                 "actions": actions_allowed(self),
                 "jails": ACTION_JAILS,
@@ -2299,6 +2407,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
         self.send_header("X-Accel-Buffering", "no")
+        self.security_headers()
         self.end_headers()
         try:
             self.wfile.write(b": ok\n\n")

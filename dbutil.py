@@ -290,12 +290,12 @@ def ensure_accounts(db, engine: str):
             used_at BIGINT
         )"""
     if engine == "postgres":
-        db.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'admin'")
+        db.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'viewer'")
         db.execute(invites.format(pk="BIGSERIAL PRIMARY KEY"))
         return
     cols = [row[1] for row in db.execute("PRAGMA table_info(users)").fetchall()]
     if "role" not in cols:
-        db.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'")
+        db.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'viewer'")
     db.execute(invites.format(pk="INTEGER PRIMARY KEY"))
 
 

@@ -667,7 +667,7 @@ function placeHostBadge(target) {
   badge.hidden = false;
   label.textContent = name;
   const slug = String(hoster || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-  const src = slug ? `/marks/${slug}.svg` : "";
+  const src = slug ? `/marks/${slug}.svg?v=1.0.14` : "";
   mark.onerror = () => { mark.hidden = true; };
   if (src) {
     mark.hidden = false;
@@ -4499,6 +4499,7 @@ async function loadAdmin() {
     return;
   }
   users.replaceChildren();
+  const selfName = (state.user && state.user.username) || "";
   for (const user of data.users || []) {
     const li = document.createElement("li");
     const name = document.createElement("span");
@@ -4507,6 +4508,22 @@ async function loadAdmin() {
     role.className = "role";
     role.textContent = roleLabel(user.role);
     li.append(name, role);
+    if (user.username !== selfName) {
+      const drop = document.createElement("button");
+      drop.type = "button";
+      drop.textContent = "Entfernen";
+      drop.addEventListener("click", async () => {
+        if (!window.confirm(`Konto ${user.username} wirklich entfernen?`)) return;
+        await fetch("/api/users/revoke", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: user.username }),
+        });
+        loadAdmin();
+      });
+      li.append(drop);
+    }
     users.appendChild(li);
   }
   invites.replaceChildren();
@@ -5076,8 +5093,13 @@ document.getElementById("settingsForm")?.addEventListener("submit", async (event
     msg.textContent = text;
     msg.className = `settings-msg${kind ? ` is-${kind}` : ""}`;
   };
-  if (next.length < 8) {
-    show("Mindestens 8 Zeichen", "bad");
+    if (next.length < 12) {
+    show("Mindestens 12 Zeichen", "bad");
+    return;
+  }
+  const kinds = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].filter((re) => re.test(next)).length;
+  if (kinds < 3) {
+    show("Drei Zeichenarten nötig", "bad");
     return;
   }
   if (next !== again) {

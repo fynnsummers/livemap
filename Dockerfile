@@ -1,7 +1,7 @@
 FROM python:3.12-slim-bookworm
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends whois ca-certificates util-linux \
+ && apt-get install -y --no-install-recommends whois ca-certificates fail2ban \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

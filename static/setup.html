@@ -12,7 +12,7 @@
   </script>
   <meta name="robots" content="noindex,nofollow">
   <link rel="icon" href="/favicon.png?v=4" type="image/png">
-  <link rel="stylesheet" href="/app.css?v=1.0.12">
+  <link rel="stylesheet" href="/app.css?v=1.0.14">
 </head>
 <body class="login-concept">
   <canvas id="loginMap" class="login-map" aria-hidden="true"></canvas>
@@ -294,7 +294,7 @@
       const found = hosterBySlug(hidden.value);
       const show = found && input.value.trim().toLowerCase() === found[1].toLowerCase();
       icon.hidden = !show;
-      if (show) icon.src = `/marks/${found[0]}.svg`;
+      if (show) icon.src = `/marks/${found[0]}.svg?v=1.0.14`;
     }
 
     function selectHoster(slug) {
@@ -331,7 +331,7 @@
         btn.className = slug === selected ? "is-selected" : "";
         btn.setAttribute("role", "option");
         const img = document.createElement("img");
-        img.src = `/marks/${slug}.svg`;
+        img.src = `/marks/${slug}.svg?v=1.0.14`;
         img.alt = "";
         const text = document.createElement("span");
         text.textContent = name;
