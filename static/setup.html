@@ -12,7 +12,7 @@
   </script>
   <meta name="robots" content="noindex,nofollow">
   <link rel="icon" href="/favicon.png?v=4" type="image/png">
-  <link rel="stylesheet" href="/app.css?v=1.0.9">
+  <link rel="stylesheet" href="/app.css?v=1.0.11">
 </head>
 <body class="login-concept">
   <canvas id="loginMap" class="login-map" aria-hidden="true"></canvas>
@@ -71,9 +71,17 @@
           </label>
           <label class="field plain">
             <span>Anbieter</span>
-            <span class="field-box">
-              <input id="serverHoster" name="hoster" maxlength="40">
-            </span>
+            <div class="hoster-pick" id="hosterPick">
+              <button type="button" id="hosterBtn" class="hoster-btn" aria-haspopup="listbox" aria-expanded="false">
+                <img id="hosterIcon" alt="" hidden>
+                <span id="hosterLabel">Anbieter wählen</span>
+              </button>
+              <div class="hoster-menu" id="hosterMenu" hidden>
+                <input id="hosterSearch" type="search" placeholder="Anbieter suchen" autocomplete="off" spellcheck="false">
+                <div id="hosterList" role="listbox"></div>
+              </div>
+              <input type="hidden" id="serverHoster" name="hoster" value="">
+            </div>
           </label>
           <div class="setup-pair">
             <label class="field plain">
@@ -214,7 +222,7 @@
           password: document.getElementById("password").value,
           again: document.getElementById("again").value,
           name: document.getElementById("serverName").value.trim(),
-          hoster: document.getElementById("serverHoster").value.trim(),
+          hoster: document.getElementById("serverHoster").value,
           lat: document.getElementById("serverLat").value.trim(),
           lon: document.getElementById("serverLon").value.trim(),
         });
@@ -243,11 +251,113 @@
           return;
         }
         if (data.name) document.getElementById("serverName").value = data.name;
-        if (data.hoster) document.getElementById("serverHoster").value = data.hoster;
+        if (data.hoster) selectHoster(data.hoster);
         if (Number.isFinite(data.lat)) document.getElementById("serverLat").value = String(data.lat);
         if (Number.isFinite(data.lon)) document.getElementById("serverLon").value = String(data.lon);
       })
       .catch(() => {});
+
+    const HOSTERS = [
+      ["akamai", "Akamai"],
+      ["alibaba", "Alibaba"],
+      ["amazon", "Amazon"],
+      ["apple", "Apple"],
+      ["cloudflare", "Cloudflare"],
+      ["contabo", "Contabo"],
+      ["digitalocean", "DigitalOcean"],
+      ["fastly", "Fastly"],
+      ["github", "GitHub"],
+      ["godaddy", "GoDaddy"],
+      ["google", "Google"],
+      ["hetzner", "Hetzner"],
+      ["ionos", "IONOS"],
+      ["leaseweb", "Leaseweb"],
+      ["linode", "Linode"],
+      ["meta", "Meta"],
+      ["microsoft", "Microsoft"],
+      ["oracle", "Oracle"],
+      ["ovh", "OVH"],
+      ["rackspace", "Rackspace"],
+      ["tencent", "Tencent"],
+      ["vultr", "Vultr"],
+    ];
+
+    function selectHoster(slug) {
+      const found = HOSTERS.find((item) => item[0] === slug);
+      const hidden = document.getElementById("serverHoster");
+      const label = document.getElementById("hosterLabel");
+      const icon = document.getElementById("hosterIcon");
+      hidden.value = found ? found[0] : "";
+      label.textContent = found ? found[1] : "Anbieter wählen";
+      if (found) {
+        icon.hidden = false;
+        icon.src = `/marks/${found[0]}.svg`;
+        icon.alt = "";
+      } else icon.hidden = true;
+      document.querySelectorAll("#hosterList button").forEach((btn) => {
+        btn.classList.toggle("is-selected", btn.dataset.slug === hidden.value);
+      });
+    }
+
+    function paintHosters(query) {
+      const list = document.getElementById("hosterList");
+      const needle = (query || "").trim().toLowerCase();
+      list.replaceChildren();
+      const rows = HOSTERS.filter((item) => item[1].toLowerCase().includes(needle) || item[0].includes(needle));
+      if (!rows.length) {
+        const empty = document.createElement("p");
+        empty.className = "hoster-empty";
+        empty.textContent = "Kein Anbieter";
+        list.append(empty);
+        return;
+      }
+      const current = document.getElementById("serverHoster").value;
+      for (const [slug, name] of rows) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.dataset.slug = slug;
+        btn.className = slug === current ? "is-selected" : "";
+        btn.setAttribute("role", "option");
+        const img = document.createElement("img");
+        img.src = `/marks/${slug}.svg`;
+        img.alt = "";
+        const text = document.createElement("span");
+        text.textContent = name;
+        btn.append(img, text);
+        btn.addEventListener("click", () => {
+          selectHoster(slug);
+          closeHoster();
+        });
+        list.append(btn);
+      }
+    }
+
+    function closeHoster() {
+      document.getElementById("hosterMenu").hidden = true;
+      document.getElementById("hosterBtn").setAttribute("aria-expanded", "false");
+    }
+
+    document.getElementById("hosterBtn").addEventListener("click", () => {
+      const menu = document.getElementById("hosterMenu");
+      const open = menu.hidden;
+      menu.hidden = !open;
+      document.getElementById("hosterBtn").setAttribute("aria-expanded", open ? "true" : "false");
+      if (open) {
+        const search = document.getElementById("hosterSearch");
+        search.value = "";
+        paintHosters("");
+        search.focus();
+      }
+    });
+    document.getElementById("hosterSearch").addEventListener("input", (event) => {
+      paintHosters(event.target.value);
+    });
+    document.addEventListener("click", (event) => {
+      if (!document.getElementById("hosterPick").contains(event.target)) closeHoster();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeHoster();
+    });
 
     showStep(1);
   </script>

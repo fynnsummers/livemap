@@ -2845,6 +2845,100 @@ body.login-concept .field input {
 
 body.login-concept .field.plain input { padding-left: 12px; }
 
+.hoster-pick { position: relative; }
+
+.hoster-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(8, 11, 15, 0.65);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.hoster-btn img,
+.hoster-menu button img {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  object-fit: contain;
+}
+
+.hoster-menu {
+  position: absolute;
+  z-index: 5;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: #141a21;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+}
+
+.hoster-menu input {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 6px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  background: rgba(8, 11, 15, 0.65);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.hoster-menu input:focus { outline: none; border-color: #3d6eae; }
+
+#hosterList {
+  max-height: 220px;
+  overflow: auto;
+}
+
+.hoster-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.hoster-menu button.is-selected {
+  font-weight: 700;
+  background: rgba(47, 111, 224, 0.16);
+}
+
+.hoster-empty {
+  margin: 6px 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+html[data-theme="light"] .hoster-btn,
+html[data-theme="light"] .hoster-menu,
+html[data-theme="light"] .hoster-menu input {
+  background: #fff;
+  border-color: rgba(20, 28, 36, 0.12);
+}
+
 body.login-concept .field input:focus {
   outline: none;
   border-color: #3d6eae;

@@ -285,6 +285,30 @@ BRANDS = {
     "akamai", "meta", "apple", "github", "oracle", "linode", "vultr", "contabo", "leaseweb",
     "alibaba", "tencent", "ionos", "godaddy", "rackspace", "net",
 }
+HOSTERS = {
+    "akamai": "Akamai",
+    "alibaba": "Alibaba",
+    "amazon": "Amazon",
+    "apple": "Apple",
+    "cloudflare": "Cloudflare",
+    "contabo": "Contabo",
+    "digitalocean": "DigitalOcean",
+    "fastly": "Fastly",
+    "github": "GitHub",
+    "godaddy": "GoDaddy",
+    "google": "Google",
+    "hetzner": "Hetzner",
+    "ionos": "IONOS",
+    "leaseweb": "Leaseweb",
+    "linode": "Linode",
+    "meta": "Meta",
+    "microsoft": "Microsoft",
+    "oracle": "Oracle",
+    "ovh": "OVH",
+    "rackspace": "Rackspace",
+    "tencent": "Tencent",
+    "vultr": "Vultr",
+}
 NGINX_TS = "%d/%b/%Y:%H:%M:%S %z"
 
 subscribers = []
@@ -718,16 +742,34 @@ def ensure_setup_code():
     print("einrichtung offen, code in data/setup.code", flush=True)
 
 
+def hoster_slug(value):
+    text = re.sub(r"[^a-z0-9]", "", (value or "").strip().lower())
+    if text in HOSTERS:
+        return text
+    for slug, label in HOSTERS.items():
+        if re.sub(r"[^a-z0-9]", "", label.lower()) == text:
+            return slug
+    return ""
+
+
 def apply_saved_server():
     with db_lock:
         name = setting_get("server_name")
+        hoster_key = setting_get("server_hoster")
         hoster = setting_get("server_hoster_name")
         lat = setting_get("server_lat")
         lon = setting_get("server_lon")
     if name:
         SERVER["name"] = name
-    if hoster:
+    picked = hoster_slug(hoster_key) or hoster_slug(hoster) or hoster_slug(SERVER.get("hoster"))
+    if picked:
+        SERVER["hoster"] = picked
+        SERVER["hoster_name"] = HOSTERS[picked]
+    elif hoster:
+        SERVER["hoster"] = ""
         SERVER["hoster_name"] = hoster
+    elif not hoster_slug(SERVER.get("hoster")):
+        SERVER["hoster"] = ""
     try:
         if lat is not None:
             SERVER["lat"] = float(lat)
@@ -1680,7 +1722,7 @@ class Handler(BaseHTTPRequestHandler):
         payload = json.dumps({
             "needed": True,
             "name": SERVER.get("name") or "",
-            "hoster": SERVER.get("hoster_name") or "",
+            "hoster": hoster_slug(SERVER.get("hoster")) or hoster_slug(SERVER.get("hoster_name")) or "",
             "lat": SERVER.get("lat"),
             "lon": SERVER.get("lon"),
         }, ensure_ascii=False).encode()
@@ -1722,7 +1764,7 @@ class Handler(BaseHTTPRequestHandler):
         password = body.get("password") or ""
         again = body.get("again") or ""
         name = (body.get("name") or "").strip()
-        hoster = (body.get("hoster") or "").strip()
+        hoster = hoster_slug(body.get("hoster") or "")
         if not setup_code_matches(code):
             time.sleep(0.35)
             self.json_error(401, "Einrichtungscode stimmt nicht")
@@ -1737,7 +1779,7 @@ class Handler(BaseHTTPRequestHandler):
         if rank < 3:
             self.json_error(400, "Passwort ist zu schwach")
             return
-        if not name or len(name) > 60 or not hoster or len(hoster) > 40:
+        if not name or len(name) > 60 or not hoster:
             self.json_error(400, "Name und Anbieter ausfüllen")
             return
         try:
@@ -1771,14 +1813,16 @@ class Handler(BaseHTTPRequestHandler):
             DB.execute("DELETE FROM sessions")
             setting_put("setup_done", "1")
             setting_put("server_name", name)
-            setting_put("server_hoster_name", hoster)
+            setting_put("server_hoster", hoster)
+            setting_put("server_hoster_name", HOSTERS[hoster])
             setting_put("server_lat", str(lat))
             setting_put("server_lon", str(lon))
             DB.execute("DELETE FROM settings WHERE key = ?", ("setup_code_hash",))
             DB.commit()
         _SETUP_DONE = True
         SERVER["name"] = name
-        SERVER["hoster_name"] = hoster
+        SERVER["hoster"] = hoster
+        SERVER["hoster_name"] = HOSTERS[hoster]
         SERVER["lat"] = lat
         SERVER["lon"] = lon
         try:

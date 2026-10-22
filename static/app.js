@@ -429,12 +429,31 @@ function blitLayer(layer, box, pose) {
   const dy = ((cam.lat - pose.lat) / 180) * box.h * cam.scale;
   const cx = box.x + box.w / 2;
   const cy = box.y + box.h / 2;
+  const origin = pose.overscan || 1;
   ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
   ctx.translate(cx + dx, cy + dy);
   ctx.scale(k, k);
-  ctx.translate(-cx, -cy);
+  ctx.translate(-cx * origin, -cy * origin);
   ctx.drawImage(layer, 0, 0);
   ctx.restore();
+}
+
+const MAP_OVERSCAN = 2;
+
+function poseStale(pose, overscan = 1) {
+  if (!pose) return true;
+  const k = cam.scale / Math.max(0.2, pose.scale);
+  const cover = overscan * 0.82;
+  if (k > 1.35 || k * cover < 1) return true;
+  let dLon = pose.lon - cam.lon;
+  if (dLon > 180) dLon -= 360;
+  if (dLon < -180) dLon += 360;
+  const margin = Math.max(0.12, (overscan - 1) * 0.34);
+  const panX = Math.abs(dLon) * pose.scale / 360;
+  const panY = Math.abs(cam.lat - pose.lat) * pose.scale / 180;
+  return panX > margin || panY > margin;
 }
 
 function themePaint() {
@@ -463,53 +482,61 @@ function themePaint() {
 
 function ensureMapLayer(box) {
   const paint = themePaint();
-  const key = `${canvas.width}x${canvas.height}|${box.x},${box.y},${box.w},${box.h}|${document.documentElement.dataset.theme || "dark"}`;
+  const key = `${canvas.width}x${canvas.height}|${box.x},${box.y},${box.w},${box.h}|${document.documentElement.dataset.theme || "dark"}|${MAP_OVERSCAN}`;
   const moving = !!camAnim || cameraShifted(mapPose);
-  if (mapLayer && mapLayerKey === key && mapPose && moving && (camAnim || performance.now() - mapBuiltAt < 160)) return;
-  if (mapLayer && mapLayerKey === key && mapPose && !cameraShifted(mapPose)) return;
+  if (mapLayer && mapLayerKey === key && mapPose && !poseStale(mapPose, mapPose.overscan || 1) && (moving || !cameraShifted(mapPose))) return;
   mapLayerKey = key;
-  mapPose = { lon: cam.lon, lat: cam.lat, scale: cam.scale };
+  const poseScale = cam.scale;
+  mapPose = { lon: cam.lon, lat: cam.lat, scale: poseScale, overscan: MAP_OVERSCAN };
   mapBuiltAt = performance.now();
+  const spread = MAP_OVERSCAN;
+  const width = Math.max(1, Math.floor(canvas.width * spread));
+  const height = Math.max(1, Math.floor(canvas.height * spread));
   if (!mapLayer) mapLayer = document.createElement("canvas");
-  if (mapLayer.width !== canvas.width || mapLayer.height !== canvas.height) {
-    mapLayer.width = canvas.width;
-    mapLayer.height = canvas.height;
+  if (mapLayer.width !== width || mapLayer.height !== height) {
+    mapLayer.width = width;
+    mapLayer.height = height;
   }
+  const big = { x: box.x * spread, y: box.y * spread, w: box.w * spread, h: box.h * spread };
   const mctx = mapLayer.getContext("2d");
   mctx.setTransform(1, 0, 0, 1, 0, 0);
-  mctx.clearRect(0, 0, mapLayer.width, mapLayer.height);
+  mctx.clearRect(0, 0, width, height);
   mctx.fillStyle = paint.sea;
-  mctx.fillRect(box.x, box.y, box.w, box.h);
-  mctx.strokeStyle = paint.grid;
-  mctx.lineWidth = 1;
-  mctx.beginPath();
-  for (let lon = -180; lon <= 180; lon += 30) {
-    const [x] = project(lon, 0, box);
-    mctx.moveTo(x, box.y);
-    mctx.lineTo(x, box.y + box.h);
-  }
-  for (let lat = -60; lat <= 60; lat += 30) {
-    const [, y] = project(0, lat, box);
-    mctx.moveTo(box.x, y);
-    mctx.lineTo(box.x + box.w, y);
-  }
-  mctx.stroke();
-  mctx.fillStyle = paint.land;
-  mctx.strokeStyle = paint.stroke;
-  mctx.lineWidth = 0.8;
-  for (const feature of state.features) {
+  mctx.fillRect(0, 0, width, height);
+  cam.scale = poseScale / spread;
+  try {
+    mctx.strokeStyle = paint.grid;
+    mctx.lineWidth = 1;
     mctx.beginPath();
-    traceGeometry(feature.geometry, box, mctx);
-    mctx.fill();
+    for (let lon = -180; lon <= 180; lon += 30) {
+      const [x] = project(lon, 0, big);
+      mctx.moveTo(x, 0);
+      mctx.lineTo(x, height);
+    }
+    for (let lat = -60; lat <= 60; lat += 30) {
+      const [, y] = project(0, lat, big);
+      mctx.moveTo(0, y);
+      mctx.lineTo(width, y);
+    }
     mctx.stroke();
+    mctx.fillStyle = paint.land;
+    mctx.strokeStyle = paint.stroke;
+    mctx.lineWidth = 0.8;
+    for (const feature of state.features) {
+      mctx.beginPath();
+      traceGeometry(feature.geometry, big, mctx);
+      mctx.fill();
+      mctx.stroke();
+    }
+  } finally {
+    cam.scale = poseScale;
   }
 }
 
 function drawMap(box) {
   mapBox = box;
   ensureMapLayer(box);
-  if (mapPose && cameraShifted(mapPose)) blitLayer(mapLayer, box, mapPose);
-  else ctx.drawImage(mapLayer, 0, 0);
+  if (mapPose) blitLayer(mapLayer, box, mapPose);
   for (const feature of state.features) {
     const goal = feature === hoverItem || feature === focusItem ? 1 : 0;
     feature.edge += ((goal - feature.edge) * (reduced ? 1 : 0.14));
@@ -639,11 +666,13 @@ function placeHostBadge(target) {
   const sy = rect.height / canvas.height;
   badge.hidden = false;
   label.textContent = name;
-  const src = hoster ? `/marks/${hoster}.svg` : "";
+  const slug = String(hoster || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const src = slug ? `/marks/${slug}.svg` : "";
+  mark.onerror = () => { mark.hidden = true; };
   if (src) {
     mark.hidden = false;
+    mark.alt = state.server.hoster_name || slug;
     if (mark.getAttribute("src") !== src) mark.src = src;
-    mark.alt = state.server.hoster_name || hoster;
   } else mark.hidden = true;
   badge.style.left = `${rect.left - stage.left + target[0] * sx + 10}px`;
   badge.style.top = `${rect.top - stage.top + target[1] * sy - 28}px`;
@@ -837,12 +866,8 @@ let heatPose = null;
 function drawPointHeat(box, shown) {
   const nowMs = performance.now();
   const moving = !!camAnim || cameraShifted(heatPose);
-  if (heatLayer && heatPose && moving && (camAnim || nowMs - heatStamp < 180)) {
+  if (heatLayer && heatPose && !poseStale(heatPose, 1) && (moving || nowMs - heatStamp < 280)) {
     blitLayer(heatLayer, box, heatPose);
-    return;
-  }
-  if (heatLayer && heatPose && !moving && nowMs - heatStamp < 280) {
-    ctx.drawImage(heatLayer, 0, 0);
     return;
   }
   heatStamp = nowMs;
@@ -3734,15 +3759,28 @@ function focusCountry(feature, options = {}) {
   syncMapsBtn();
 }
 
+function unprojectPose(x, y, box, pose) {
+  const cx = (pose.lon + 180) / 360;
+  const cy = (90 - pose.lat) / 180;
+  const wx = (x - box.x - box.w / 2) / (box.w * pose.scale) + cx;
+  const wy = (y - box.y - box.h / 2) / (box.h * pose.scale) + cy;
+  return [wx * 360 - 180, 90 - wy * 180];
+}
+
 function zoomMapAt(clientX, clientY, factor, options = {}) {
-  const animate = !!options.animate;
+  const animate = options.animate !== false;
   const rect = canvas.getBoundingClientRect();
   const x = (clientX - rect.left) * (canvas.width / rect.width);
   const y = (clientY - rect.top) * (canvas.height / rect.height);
   const box = mapBox;
-  const [lon, lat] = unproject(x, y, box);
-  const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, cam.scale * factor));
-  if (Math.abs(next - cam.scale) < 0.0005) return;
+  const base = {
+    lon: camAnim ? camTarget.lon : cam.lon,
+    lat: camAnim ? camTarget.lat : cam.lat,
+    scale: camAnim ? camTarget.scale : cam.scale,
+  };
+  const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, base.scale * factor));
+  if (Math.abs(next - base.scale) < 0.0005) return;
+  const [lon, lat] = unprojectPose(x, y, box, base);
   const wx = (lon + 180) / 360;
   const wy = (90 - lat) / 180;
   const cx = wx - (x - box.x - box.w / 2) / (box.w * next);
@@ -3753,11 +3791,11 @@ function zoomMapAt(clientX, clientY, factor, options = {}) {
   nextLat = Math.max(-80, Math.min(80, nextLat));
   if (next <= 1.02) {
     if (focusItem) closeCountry();
-    else if (animate) moveCam(0, 0, 1, 220);
+    else if (animate) moveCam(0, 0, 1, 240);
     else setCam(0, 0, 1);
     return;
   }
-  if (animate) moveCam(nextLon, nextLat, next, 220);
+  if (animate) moveCam(nextLon, nextLat, next, 240);
   else setCam(nextLon, nextLat, next);
 }
 
@@ -3882,7 +3920,7 @@ canvas.addEventListener("wheel", (event) => {
   else if (event.deltaMode === 2) dy *= Math.max(1, canvas.clientHeight);
   dy = Math.max(-80, Math.min(80, dy));
   const factor = Math.exp(-dy * 0.0022);
-  zoomMapAt(event.clientX, event.clientY, factor, { animate: false });
+  zoomMapAt(event.clientX, event.clientY, factor);
 }, { passive: false });
 addEventListener("keydown", (event) => {
   if (event.key === "Escape" && focusItem) closeCountry();
