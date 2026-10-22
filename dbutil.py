@@ -207,6 +207,7 @@ def init_schema(db, engine: str):
                 value TEXT NOT NULL
             )"""
         )
+        ensure_accounts(db, "postgres")
         db.commit()
     else:
         db.execute(
@@ -270,7 +271,32 @@ def init_schema(db, engine: str):
                 value TEXT NOT NULL
             )"""
         )
+        ensure_accounts(db, "sqlite")
         db.commit()
+
+
+def ensure_accounts(db, engine: str):
+    invites = """CREATE TABLE IF NOT EXISTS invites (
+            id {pk},
+            username TEXT NOT NULL UNIQUE,
+            role TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            binding TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_ip TEXT NOT NULL,
+            admin_pw_hash TEXT NOT NULL,
+            created_at BIGINT NOT NULL,
+            expires_at BIGINT NOT NULL,
+            used_at BIGINT
+        )"""
+    if engine == "postgres":
+        db.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'admin'")
+        db.execute(invites.format(pk="BIGSERIAL PRIMARY KEY"))
+        return
+    cols = [row[1] for row in db.execute("PRAGMA table_info(users)").fetchall()]
+    if "role" not in cols:
+        db.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'")
+    db.execute(invites.format(pk="INTEGER PRIMARY KEY"))
 
 
 def migrate_sqlite_to_pg(pg: PgConnection, sqlite_path: Path):

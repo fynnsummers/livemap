@@ -12,72 +12,103 @@
   </script>
   <meta name="robots" content="noindex,nofollow">
   <link rel="icon" href="/favicon.png?v=4" type="image/png">
-  <link rel="stylesheet" href="/app.css?v=55">
+  <link rel="stylesheet" href="/app.css?v=1.0.8">
 </head>
-<body class="login-page">
+<body class="login-concept">
   <canvas id="loginMap" class="login-map" aria-hidden="true"></canvas>
   <div class="login-veil" aria-hidden="true"></div>
-  <header>
-    <a class="brand" href="/setup">
-      <img class="brand-logo logo-for-dark" src="/logo-dark.png?v=5" alt="Livemap">
-      <img class="brand-logo logo-for-light" src="/logo.png?v=5" alt="">
+  <main class="login-stage">
+    <a class="login-brand" href="/setup">
+      <img class="logo-for-dark" src="/logo-dark.png?v=5" alt="Livemap">
+      <img class="logo-for-light" src="/logo.png?v=5" alt="">
     </a>
-  </header>
-  <main class="login-main">
-    <section class="login-panel">
+    <section class="login-card" id="setupCard">
+      <h1>Einrichtung</h1>
+      <p class="login-lead" id="stepLabel">Schritt 1 von 3</p>
       <form class="setup-form" id="setupForm" autocomplete="off">
-        <p class="login-kicker">Einrichtung</p>
         <div class="stepbar" aria-hidden="true"><span id="stepFill"></span></div>
-        <p class="step-label" id="stepLabel">Schritt 1 von 3</p>
 
         <div data-step="1">
           <p class="setup-note">Der Einrichtungscode steht nur auf dem Server, in <code>data/setup.code</code> und in der Ausgabe des Dienstes. Damit kann niemand sonst das Konto anlegen.</p>
-          <label>Einrichtungscode
-            <input id="code" name="code" autocomplete="off" required>
+          <label class="field plain">
+            <span>Einrichtungscode</span>
+            <span class="field-box">
+              <input id="code" name="code" autocomplete="off" required>
+            </span>
           </label>
         </div>
 
         <div data-step="2" hidden>
-          <label>Benutzer
-            <input id="username" name="username" autocomplete="username" spellcheck="false">
+          <label class="field plain">
+            <span>Benutzer</span>
+            <span class="field-box">
+              <input id="username" name="username" autocomplete="username" spellcheck="false">
+            </span>
           </label>
-          <label>Passwort
-            <input id="password" name="password" type="password" autocomplete="new-password">
+          <label class="field plain">
+            <span>Passwort</span>
+            <span class="field-box">
+              <input id="password" name="password" type="password" autocomplete="new-password">
+            </span>
           </label>
           <div class="pw-meter" id="pwMeter" data-rank=""><span></span></div>
           <p class="pw-label" id="pwLabel"></p>
-          <label>Wiederholen
-            <input id="again" name="again" type="password" autocomplete="new-password">
+          <label class="field plain">
+            <span>Wiederholen</span>
+            <span class="field-box">
+              <input id="again" name="again" type="password" autocomplete="new-password">
+            </span>
           </label>
           <p class="setup-note">Der Balken muss Good oder Strong erreichen. Mindestens 12 Zeichen, drei Zeichenarten, nicht der Benutzername.</p>
         </div>
 
         <div data-step="3" hidden>
-          <label>Name
-            <input id="serverName" name="name" maxlength="60">
+          <label class="field plain">
+            <span>Name</span>
+            <span class="field-box">
+              <input id="serverName" name="name" maxlength="60">
+            </span>
           </label>
-          <label>Anbieter
-            <input id="serverHoster" name="hoster" maxlength="40">
+          <label class="field plain">
+            <span>Anbieter</span>
+            <span class="field-box">
+              <input id="serverHoster" name="hoster" maxlength="40">
+            </span>
           </label>
-          <label>Breite
-            <input id="serverLat" name="lat" inputmode="decimal">
-          </label>
-          <label>Länge
-            <input id="serverLon" name="lon" inputmode="decimal">
-          </label>
+          <div class="setup-pair">
+            <label class="field plain">
+              <span>Breite</span>
+              <span class="field-box">
+                <input id="serverLat" name="lat" inputmode="decimal">
+              </span>
+            </label>
+            <label class="field plain">
+              <span>Länge</span>
+              <span class="field-box">
+                <input id="serverLon" name="lon" inputmode="decimal">
+              </span>
+            </label>
+          </div>
         </div>
 
-        <div class="login-row">
+        <div class="setup-actions">
           <button type="button" id="backBtn" hidden>Zurück</button>
-          <button type="button" class="solid" id="nextBtn">Weiter</button>
-          <p class="login-error" id="error" role="alert"></p>
+          <button type="button" id="nextBtn">Weiter</button>
         </div>
+        <p class="login-error" id="error" role="alert"></p>
       </form>
     </section>
   </main>
-  <footer class="login-foot">© 2026 Livemap</footer>
+  <aside class="login-host" id="loginHost" hidden>
+    <p id="hostName"></p>
+    <p id="hostHostname" hidden></p>
+    <p id="hostHoster"></p>
+    <p id="hostPlace"></p>
+  </aside>
+  <script src="/login-demo.js?v=1"></script>
   <script>
     const form = document.getElementById("setupForm");
+    const card = document.getElementById("setupCard");
     const error = document.getElementById("error");
     const nextBtn = document.getElementById("nextBtn");
     const backBtn = document.getElementById("backBtn");
@@ -192,7 +223,7 @@
           nextBtn.disabled = false;
           return;
         }
-        location.href = "/";
+        card.innerHTML = '<h1>Fertig! Sie können loslegen</h1><p class="login-lead">Das Konto ist bereit.</p><a class="setup-go" href="/">Livemap öffnen</a>';
       } catch (err) {
         error.textContent = "Netzwerkfehler";
         nextBtn.disabled = false;
@@ -218,50 +249,6 @@
       })
       .catch(() => {});
 
-    const canvas = document.getElementById("loginMap");
-    const ctx = canvas.getContext("2d");
-    let features = [];
-    function paint() {
-      const light = document.documentElement.dataset.theme === "light";
-      const sea = light ? "#e7edf2" : "#0b0e11";
-      const land = light ? "#c5d0da" : "#3a4450";
-      const rect = canvas.getBoundingClientRect();
-      const dpr = Math.min(2, devicePixelRatio || 1);
-      canvas.width = Math.max(1, Math.floor(rect.width * dpr));
-      canvas.height = Math.max(1, Math.floor(rect.height * dpr));
-      const w = canvas.width;
-      const h = canvas.height;
-      let bw = w;
-      let bh = bw / 2;
-      if (bh < h) { bh = h; bw = bh * 2; }
-      const box = { x: (w - bw) / 2, y: (h - bh) / 2, w: bw, h: bh };
-      ctx.fillStyle = sea;
-      ctx.fillRect(0, 0, w, h);
-      ctx.fillStyle = land;
-      for (const feature of features) {
-        const geom = feature.geometry;
-        if (!geom) continue;
-        const polys = geom.type === "Polygon" ? [geom.coordinates] : geom.type === "MultiPolygon" ? geom.coordinates : [];
-        ctx.beginPath();
-        for (const poly of polys) {
-          for (const ring of poly) {
-            ring.forEach((pt, i) => {
-              const x = box.x + ((pt[0] + 180) / 360) * box.w;
-              const y = box.y + ((90 - pt[1]) / 180) * box.h;
-              if (i === 0) ctx.moveTo(x, y);
-              else ctx.lineTo(x, y);
-            });
-            ctx.closePath();
-          }
-        }
-        ctx.fill();
-      }
-    }
-    fetch("/world.geojson").then((res) => res.json()).then((geo) => {
-      features = geo.features || [];
-      paint();
-    }).catch(() => paint());
-    window.addEventListener("resize", paint);
     showStep(1);
   </script>
 </body>

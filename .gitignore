@@ -7,6 +7,7 @@ data/f2b.offset
 data/livemap.db
 data/login.txt
 data/setup.code
+data/dbip-city-lite.csv.gz
 .env
 *.env
 !.env.example

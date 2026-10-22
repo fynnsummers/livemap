@@ -3,6 +3,7 @@
 
 import array
 import calendar
+import csv
 import gzip
 import hashlib
 import hmac
@@ -32,6 +33,7 @@ STATIC = ROOT / "static"
 DB_PATH = DATA / "events.sqlite"
 OFFSET_PATH = DATA / "f2b.offset"
 GEO_PATH = DATA / "dbip-country-lite.csv.gz"
+CITY_PATH = DATA / "dbip-city-lite.csv.gz"
 NET_PATH = DATA / "networks.csv"
 HIT_KEEP = 5000
 F2B_LOG = Path(os.environ.get("LIVEMAP_F2B", "/var/log/fail2ban.log"))
@@ -81,9 +83,43 @@ def machine_hostname():
     return socket.gethostname()
 
 
+def _private_ipv4(ip: str) -> bool:
+    try:
+        parts = [int(part) for part in ip.split(".")]
+    except ValueError:
+        return True
+    if len(parts) != 4 or any(part < 0 or part > 255 for part in parts):
+        return True
+    if parts[0] in (10, 127) or (parts[0] == 192 and parts[1] == 168):
+        return True
+    if parts[0] == 172 and 16 <= parts[1] <= 31:
+        return True
+    if parts[0] == 169 and parts[1] == 254:
+        return True
+    return False
+
+
+def machine_ipv4() -> str:
+    for item in os.environ.get("LIVEMAP_OWN_IPS", "").split(","):
+        ip = item.strip()
+        if ip and ":" not in ip and not _private_ipv4(ip):
+            return ip
+    return ""
+
+
+def app_version() -> str:
+    try:
+        text = (STATIC / "version.txt").read_text(encoding="utf-8").strip()
+    except OSError:
+        text = ""
+    return text or "1.0.0"
+
+
 SERVER = {
     "name": os.environ.get("LIVEMAP_NAME", socket.gethostname()),
     "hostname": machine_hostname(),
+    "ipv4": machine_ipv4(),
+    "version": app_version(),
     "hoster": os.environ.get("LIVEMAP_HOSTER", "ionos"),
     "hoster_name": os.environ.get("LIVEMAP_HOSTER_NAME", "IONOS"),
     "lat": float(os.environ.get("LIVEMAP_LAT", "52.52")),
@@ -253,11 +289,13 @@ NGINX_TS = "%d/%b/%Y:%H:%M:%S %z"
 
 subscribers = []
 sub_lock = threading.Lock()
-db_lock = threading.Lock()
+db_lock = threading.RLock()
 geo_starts = array.array("I")
 geo_ends = array.array("I")
 geo_ccs = array.array("H")
 geo_codes = []
+geo_lats = array.array("f")
+geo_lons = array.array("f")
 net_starts = array.array("I")
 net_ends = array.array("I")
 net_keys = []
@@ -319,8 +357,9 @@ def ip_allowed(ip, nets):
 
 
 def actions_allowed(handler):
-    if getattr(handler, "user", None):
-        return True
+    user = getattr(handler, "user", None)
+    if user:
+        return user.get("role") == "admin"
     return ip_allowed(client_ip(handler), ACTION_NETS)
 
 
@@ -607,6 +646,49 @@ def password_rank(password: str, username: str) -> tuple[int, str]:
     return 4, labels[4]
 
 
+INVITE_DAYS = 7
+
+
+def invite_secret() -> str:
+    with db_lock:
+        secret = setting_get("invite_secret")
+        if secret:
+            return secret
+        secret = secrets.token_hex(32)
+        setting_put("invite_secret", secret)
+        DB.commit()
+        return secret
+
+
+def invite_binding(username: str, admin_name: str, admin_pw_hash: str, ip: str, token: str) -> str:
+    material = "\n".join((username, admin_name, admin_pw_hash, ip, token))
+    return hmac.new(invite_secret().encode("utf-8"), material.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def find_invite(token: str):
+    digest = hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+    now = int(time.time())
+    with db_lock:
+        row = DB.execute(
+            """SELECT username, role, binding, created_by, created_ip, admin_pw_hash, expires_at, used_at
+               FROM invites WHERE token_hash = ? LIMIT 1""",
+            (digest,),
+        ).fetchone()
+    if not row:
+        return None
+    username, role, binding, created_by, created_ip, admin_pw_hash, expires_at, used_at = row
+    expected = invite_binding(username, created_by, admin_pw_hash, created_ip, token)
+    if not hmac.compare_digest(binding, expected):
+        return None
+    if used_at or int(expires_at) < now:
+        return None
+    return {
+        "username": username,
+        "role": role or "viewer",
+        "expires_at": int(expires_at),
+    }
+
+
 def setup_code_matches(code: str) -> bool:
     with db_lock:
         stored = setting_get("setup_code_hash") or ""
@@ -672,10 +754,11 @@ def ensure_admin_user():
     print(f"admin angelegt: {ADMIN_USER}", flush=True)
 
 
-def create_session(user_id: int, ip: str, user_agent: str) -> str:
+def create_session(user_id: int, ip: str, user_agent: str, remember: bool = True) -> str:
     token = secrets.token_urlsafe(32)
     now = int(time.time())
-    expires = now + SESSION_DAYS * 86400
+    span = SESSION_DAYS * 86400 if remember else 12 * 3600
+    expires = now + span
     with db_lock:
         DB.execute(
             "INSERT INTO sessions (token_hash, user_id, created_at, expires_at, ip, user_agent) "
@@ -701,18 +784,18 @@ def session_user(token: str | None):
     now = int(time.time())
     with db_lock:
         row = DB.execute(
-            """SELECT u.id, u.username, s.expires_at
+            """SELECT u.id, u.username, COALESCE(u.role, 'admin'), s.expires_at
                FROM sessions s JOIN users u ON u.id = s.user_id
                WHERE s.token_hash = ? LIMIT 1""",
             (token_hash(token),),
         ).fetchone()
         if not row:
             return None
-        if int(row[2]) < now:
+        if int(row[3]) < now:
             DB.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash(token),))
             DB.commit()
             return None
-    return {"id": row[0], "username": row[1]}
+    return {"id": row[0], "username": row[1], "role": row[2] or "admin"}
 
 
 def parse_cookies(handler):
@@ -732,7 +815,7 @@ def request_secure(handler) -> bool:
     return os.environ.get("LIVEMAP_SECURE_COOKIE", "1").strip() not in ("0", "false", "no")
 
 
-def session_cookie_header(token: str, handler, clear=False) -> str:
+def session_cookie_header(token: str, handler, clear=False, remember=True) -> str:
     parts = [
         f"{SESSION_COOKIE}={'' if clear else token}",
         "Path=/",
@@ -741,7 +824,7 @@ def session_cookie_header(token: str, handler, clear=False) -> str:
     ]
     if clear:
         parts.append("Max-Age=0")
-    else:
+    elif remember:
         parts.append(f"Max-Age={SESSION_DAYS * 86400}")
     if request_secure(handler):
         parts.append("Secure")
@@ -838,36 +921,55 @@ def load_geo():
     starts = array.array("I")
     ends = array.array("I")
     ccs = array.array("H")
-    with gzip.open(GEO_PATH, "rt", encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line or line.startswith("#"):
+    lats = array.array("f")
+    lons = array.array("f")
+    path = CITY_PATH if CITY_PATH.exists() else GEO_PATH
+    with gzip.open(path, "rt", encoding="utf-8", errors="replace", newline="") as handle:
+        for row in csv.reader(handle):
+            if len(row) >= 8:
+                start_s, end_s, _continent, code, _state, _city, lat_s, lon_s = row[:8]
+            elif len(row) >= 3:
+                start_s, end_s, code = row[:3]
+                lat_s = lon_s = "0"
+            else:
                 continue
-            start_s, end_s, code = line.split(",")[:3]
-            code = code.strip().strip('"').upper()
+            code = code.strip().upper()
             if code in ("", "ZZ"):
                 continue
-            start = ip4_to_int(start_s.strip().strip('"'))
-            end = ip4_to_int(end_s.strip().strip('"'))
+            start = ip4_to_int(start_s.strip())
+            end = ip4_to_int(end_s.strip())
             if start is None or end is None or end < start:
                 continue
+            try:
+                lat = float(lat_s)
+                lon = float(lon_s)
+            except ValueError:
+                lat = lon = 0.0
             if code not in index:
                 index[code] = len(codes)
                 codes.append(code)
             starts.append(start)
             ends.append(end)
             ccs.append(index[code])
-    return starts, ends, ccs, codes
+            lats.append(lat)
+            lons.append(lon)
+    print(f"geo datei {path.name} bereiche {len(starts)}", flush=True)
+    return starts, ends, ccs, codes, lats, lons
 
 
-def lookup_country(ip):
+def lookup_place(ip):
     n = ip4_to_int(ip)
     if n is None or not geo_starts:
-        return None
+        return None, None, None
     i = bisect_right(geo_starts, n) - 1
     if i < 0 or n > geo_ends[i]:
-        return None
-    return geo_codes[geo_ccs[i]]
+        return None, None, None
+    code = geo_codes[geo_ccs[i]]
+    lat = float(geo_lats[i])
+    lon = float(geo_lons[i])
+    if lat == 0.0 and lon == 0.0:
+        return code, None, None
+    return code, lat, lon
 
 
 def load_networks():
@@ -935,6 +1037,11 @@ def burst_verdict(ip, ts):
     recent = [item for item in bucket if item[0] >= int(ts) - 20]
     if len(recent) < 8:
         recent = [item for item in bucket if item[0] >= int(ts) - 35]
+    # Normale Seitenaufrufe bleiben Besuche. Nur Fehlschläge und Sonden zählen als Burst.
+    recent = [
+        item for item in recent
+        if not (item[3] in ("page", "asset") and 0 < item[2] < 400)
+    ]
     if len(recent) < 6:
         return None
     paths = {item[1] for item in recent if item[1]}
@@ -1005,18 +1112,16 @@ def resolve_host(file_host: str, vhost: str, referer: str) -> str:
 
 
 def place(ip):
-    code = lookup_country(ip)
-    if not code or code not in CENTROIDS:
-        return code, code or "", None, None
-    lat, lon, name = CENTROIDS[code]
-    mix = zlib.crc32(ip.encode()) & 0xFFFFFFFF
-    lat += ((mix & 1023) / 1023 - 0.5) * 3.6
-    lon += (((mix >> 10) & 1023) / 1023 - 0.5) * 4.8
-    lat = max(-70.0, min(78.0, lat))
-    if lon > 180:
-        lon -= 360
-    if lon < -180:
-        lon += 360
+    code, lat, lon = lookup_place(ip)
+    if code in CENTROIDS:
+        country_lat, country_lon, name = CENTROIDS[code]
+    else:
+        country_lat = country_lon = None
+        name = code or ""
+    if lat is None:
+        lat, lon = country_lat, country_lon
+    if lat is None or lon is None:
+        return code, name, None, None
     return code, name, round(lat, 3), round(lon, 3)
 
 
@@ -1452,12 +1557,24 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/logout":
             self.logout()
             return
+        if path == "/api/invite/open":
+            self.invite_open()
+            return
+        if path == "/api/invite/finish":
+            self.invite_finish()
+            return
         if not self.require_auth(path):
             return
         if path == "/api/action":
             self.action()
         elif path == "/api/password":
             self.change_password()
+        elif path == "/api/users":
+            self.users_create()
+        elif path == "/api/users/revoke":
+            self.users_revoke()
+        elif path == "/api/setup/reset":
+            self.setup_reset()
         else:
             self.send_error(404)
 
@@ -1490,6 +1607,20 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/host":
             self.host_public()
             return
+        if path == "/robots.txt":
+            self.bytes(
+                b"User-agent: *\nDisallow: /invite\n",
+                "text/plain; charset=utf-8",
+                {"Cache-Control": "public, max-age=86400"},
+            )
+            return
+        if path == "/invite" or path.startswith("/invite/"):
+            self.file(
+                STATIC / "invite.html",
+                "text/html; charset=utf-8",
+                extra={"X-Robots-Tag": "noindex, nofollow, noarchive, nosnippet", "Referrer-Policy": "no-referrer"},
+            )
+            return
         if path == "/world.geojson":
             self.file(DATA / "world.geojson", "application/geo+json", "public, max-age=86400")
             return
@@ -1501,6 +1632,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/app.css":
             self.file(STATIC / "app.css", "text/css; charset=utf-8")
             return
+        if path == "/login-demo.js":
+            self.file(STATIC / "login-demo.js", "text/javascript; charset=utf-8")
+            return
+        if re.fullmatch(r"/flags/[a-z]{2}\.svg", path):
+            self.file(STATIC / "flags" / path.rsplit("/", 1)[1], "image/svg+xml", "public, max-age=86400")
+            return
         if not self.require_auth(path):
             return
         if path == "/api/bootstrap":
@@ -1509,6 +1646,8 @@ class Handler(BaseHTTPRequestHandler):
             self.bans()
         elif path == "/api/status":
             self.status()
+        elif path == "/api/users":
+            self.users_list()
         elif path == "/api/stream":
             self.stream()
         elif path == "/api/ip":
@@ -1517,8 +1656,6 @@ class Handler(BaseHTTPRequestHandler):
             self.file(STATIC / "index.html", "text/html; charset=utf-8")
         elif path == "/app.js":
             self.file(STATIC / "app.js", "text/javascript; charset=utf-8")
-        elif re.fullmatch(r"/flags/[a-z]{2}\.svg", path):
-            self.file(STATIC / "flags" / path.rsplit("/", 1)[1], "image/svg+xml", "public, max-age=86400")
         elif re.fullmatch(r"/marks/[a-z0-9-]+\.svg", path):
             self.file(STATIC / "marks" / path.rsplit("/", 1)[1], "image/svg+xml", "public, max-age=86400")
         else:
@@ -1687,13 +1824,14 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(0.35)
             self.json_error(401, "Login fehlgeschlagen")
             return
-        token = create_session(row[0], ip, self.headers.get("User-Agent") or "")
+        remember = True if "remember" not in body else bool(body.get("remember"))
+        token = create_session(row[0], ip, self.headers.get("User-Agent") or "", remember=remember)
         payload = json.dumps({"ok": True, "user": {"id": row[0], "username": username}}, ensure_ascii=False).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Set-Cookie", session_cookie_header(token, self))
+        self.send_header("Set-Cookie", session_cookie_header(token, self, remember=remember))
         self.end_headers()
         if not getattr(self, "_head_only", False):
             self.wfile.write(payload)
@@ -1733,6 +1871,214 @@ class Handler(BaseHTTPRequestHandler):
             DB.commit()
         self.bytes(b'{"ok":true}', "application/json; charset=utf-8")
 
+    def require_admin(self) -> bool:
+        if (self.user or {}).get("role") == "admin":
+            return True
+        self.json_error(403, "Nur die Administration")
+        return False
+
+    def public_origin(self) -> str:
+        proto = (self.headers.get("X-Forwarded-Proto") or "https").split(",")[0].strip() or "https"
+        host = (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "livemap.infynnite.de").split(",")[0].strip()
+        return f"{proto}://{host}"
+
+    def invite_open(self):
+        ip = client_ip(self)
+        if not login_rate_ok(ip):
+            self.json_error(429, "Zu viele Versuche, später erneut")
+            return
+        body = self.read_json()
+        if not isinstance(body, dict):
+            self.json_error(400, "JSON ungültig")
+            return
+        invite = find_invite((body.get("token") or "").strip())
+        if not invite:
+            time.sleep(0.2)
+            self.json_error(404, "Einladung ungültig")
+            return
+        payload = json.dumps({"ok": True, "username": invite["username"]}, ensure_ascii=False).encode()
+        self.bytes(payload, "application/json; charset=utf-8")
+
+    def invite_finish(self):
+        ip = client_ip(self)
+        if not login_rate_ok(ip):
+            self.json_error(429, "Zu viele Versuche, später erneut")
+            return
+        body = self.read_json()
+        if not isinstance(body, dict):
+            self.json_error(400, "JSON ungültig")
+            return
+        token = (body.get("token") or "").strip()
+        password = body.get("password") or ""
+        again = body.get("again") or ""
+        invite = find_invite(token)
+        if not invite:
+            time.sleep(0.2)
+            self.json_error(404, "Einladung ungültig")
+            return
+        if password != again:
+            self.json_error(400, "Passwörter stimmen nicht überein")
+            return
+        rank, _label = password_rank(password, invite["username"])
+        if rank < 3:
+            self.json_error(400, "Passwort ist zu schwach")
+            return
+        now = int(time.time())
+        hashed = hash_password(password)
+        token_digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        with db_lock:
+            fresh = find_invite(token)
+            if not fresh:
+                self.json_error(404, "Einladung ungültig")
+                return
+            exists = DB.execute("SELECT id FROM users WHERE username = ?", (fresh["username"],)).fetchone()
+            if exists:
+                self.json_error(409, "Dieses Konto gibt es schon")
+                return
+            DB.execute(
+                "INSERT INTO users (username, password_hash, created_at, role) VALUES (?,?,?,?)",
+                (fresh["username"], hashed, now, "viewer"),
+            )
+            DB.execute("UPDATE invites SET used_at = ? WHERE token_hash = ?", (now, token_digest))
+            row = DB.execute("SELECT id FROM users WHERE username = ?", (fresh["username"],)).fetchone()
+            DB.commit()
+        session = create_session(row[0], ip, self.headers.get("User-Agent") or "", remember=True)
+        payload = json.dumps({"ok": True, "username": fresh["username"]}, ensure_ascii=False).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Set-Cookie", session_cookie_header(session, self, remember=True))
+        self.end_headers()
+        if not getattr(self, "_head_only", False):
+            self.wfile.write(payload)
+
+    def users_list(self):
+        if not self.require_admin():
+            return
+        now = int(time.time())
+        with db_lock:
+            users = DB.execute(
+                "SELECT username, COALESCE(role, 'admin'), created_at FROM users ORDER BY id"
+            ).fetchall()
+            invites = DB.execute(
+                """SELECT username, created_at, expires_at FROM invites
+                   WHERE used_at IS NULL AND expires_at >= ? ORDER BY created_at DESC""",
+                (now,),
+            ).fetchall()
+        payload = json.dumps({
+            "ok": True,
+            "users": [
+                {"username": row[0], "role": row[1] or "admin", "created_at": int(row[2] or 0)}
+                for row in users
+            ],
+            "invites": [
+                {"username": row[0], "created_at": int(row[1]), "expires_at": int(row[2])}
+                for row in invites
+            ],
+        }, ensure_ascii=False).encode()
+        self.bytes(payload, "application/json; charset=utf-8")
+
+    def users_create(self):
+        if not self.require_admin():
+            return
+        body = self.read_json()
+        if not isinstance(body, dict):
+            self.json_error(400, "JSON ungültig")
+            return
+        username = (body.get("username") or "").strip()
+        if not USER_RE.fullmatch(username):
+            self.json_error(400, "Benutzer: Buchstabe, dann 2 bis 31 Zeichen aus Buchstaben, Ziffern, _ oder -")
+            return
+        if username.lower() == (self.user.get("username") or "").lower():
+            self.json_error(400, "Das eigene Konto ist schon da")
+            return
+        ip = client_ip(self)
+        now = int(time.time())
+        expires = now + INVITE_DAYS * 86400
+        token = secrets.token_urlsafe(32)
+        with db_lock:
+            taken = DB.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+            if taken:
+                self.json_error(409, "Dieses Konto gibt es schon")
+                return
+            admin = DB.execute(
+                "SELECT password_hash FROM users WHERE id = ?",
+                (self.user["id"],),
+            ).fetchone()
+            if not admin:
+                self.json_error(403, "Nur die Administration")
+                return
+            binding = invite_binding(username, self.user["username"], admin[0], ip, token)
+            DB.execute("DELETE FROM invites WHERE username = ? AND used_at IS NULL", (username,))
+            DB.execute(
+                """INSERT INTO invites
+                   (username, role, token_hash, binding, created_by, created_ip, admin_pw_hash, created_at, expires_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (
+                    username,
+                    "viewer",
+                    hashlib.sha256(token.encode("utf-8")).hexdigest(),
+                    binding,
+                    self.user["username"],
+                    clip(ip, 64),
+                    admin[0],
+                    now,
+                    expires,
+                ),
+            )
+            DB.commit()
+        url = f"{self.public_origin()}/invite/{token}"
+        payload = json.dumps({
+            "ok": True,
+            "username": username,
+            "url": url,
+            "expires_at": expires,
+        }, ensure_ascii=False).encode()
+        self.bytes(payload, "application/json; charset=utf-8")
+
+    def users_revoke(self):
+        if not self.require_admin():
+            return
+        body = self.read_json()
+        if not isinstance(body, dict):
+            self.json_error(400, "JSON ungültig")
+            return
+        username = (body.get("username") or "").strip()
+        with db_lock:
+            DB.execute("DELETE FROM invites WHERE username = ? AND used_at IS NULL", (username,))
+            DB.commit()
+        self.bytes(b'{"ok":true}', "application/json; charset=utf-8")
+
+    def setup_reset(self):
+        global _SETUP_DONE
+        if not self.require_admin():
+            return
+        code = secrets.token_urlsafe(18)
+        digest = hashlib.sha256(code.encode("utf-8")).hexdigest()
+        with db_lock:
+            DB.execute("DELETE FROM sessions")
+            DB.execute("DELETE FROM invites")
+            DB.execute("DELETE FROM users")
+            setting_put("setup_done", "0")
+            setting_put("setup_code_hash", digest)
+            DB.commit()
+        SETUP_CODE_PATH.write_text(code + "\n", encoding="utf-8")
+        try:
+            os.chmod(SETUP_CODE_PATH, 0o600)
+        except OSError:
+            pass
+        _SETUP_DONE = False
+        payload = json.dumps({"ok": True, "code": code}, ensure_ascii=False).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Set-Cookie", session_cookie_header("", self, clear=True))
+        self.end_headers()
+        if not getattr(self, "_head_only", False):
+            self.wfile.write(payload)
+
     def logout(self):
         _, token = self.current_user()
         destroy_session(token)
@@ -1770,7 +2116,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def action(self):
         if not actions_allowed(self):
-            self.json_error(403, "Aktionen nur aus erlaubten Netzen")
+            if getattr(self, "user", None) and self.user.get("role") != "admin":
+                self.json_error(403, "Dieses Konto kann nur zusehen")
+            else:
+                self.json_error(403, "Aktionen nur aus erlaubten Netzen")
             return
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0 or length > 4000:
@@ -1821,17 +2170,21 @@ class Handler(BaseHTTPRequestHandler):
         if not getattr(self, "_head_only", False):
             self.wfile.write(data)
 
-    def file(self, path, content_type, cache="no-cache"):
+    def file(self, path, content_type, cache="no-cache", extra=None):
         if not path.exists():
             self.send_error(404)
             return
         data = path.read_bytes()
-        self.bytes(data, content_type, {"Cache-Control": cache} if cache != "no-cache" else None)
+        headers = dict(extra or {})
+        if cache != "no-cache":
+            headers["Cache-Control"] = cache
+        self.bytes(data, content_type, headers or None)
 
     def host_public(self):
         payload = json.dumps({
             "name": SERVER.get("name") or "",
             "hostname": SERVER.get("hostname") or "",
+            "ipv4": SERVER.get("ipv4") or "",
             "hoster": SERVER.get("hoster_name") or SERVER.get("hoster") or "",
             "lat": SERVER.get("lat"),
             "lon": SERVER.get("lon"),
@@ -1867,12 +2220,17 @@ class Handler(BaseHTTPRequestHandler):
             }
             for r in hit_rows
         ]
+        SERVER["version"] = app_version()
         payload = json.dumps(
             {
                 "server": SERVER,
                 "events": events,
                 "hits": hits,
-                "user": {"username": self.user["username"]},
+                "user": {
+                    "username": self.user["username"],
+                    "ip": client_ip(self),
+                    "role": self.user.get("role") or "admin",
+                },
                 "actions": actions_allowed(self),
                 "jails": ACTION_JAILS,
                 "bans": banned_map(),
@@ -1915,11 +2273,28 @@ class Handler(BaseHTTPRequestHandler):
                     subscribers.remove(q)
 
 
+def relocate_events():
+    with db_lock:
+        ips = [row[0] for row in DB.execute("SELECT DISTINCT ip FROM events").fetchall()]
+    updates = []
+    for ip in ips:
+        cc, name, lat, lon = place(ip)
+        if lat is None:
+            continue
+        updates.append((lat, lon, cc or "", name or "", ip))
+    if not updates:
+        return
+    with db_lock:
+        DB.executemany("UPDATE events SET lat = ?, lon = ?, cc = ?, name = ? WHERE ip = ?", updates)
+        DB.commit()
+    print(f"orte aktualisiert {len(updates)}", flush=True)
+
+
 def main():
-    global DB, geo_starts, geo_ends, geo_ccs, geo_codes, net_starts, net_ends, net_keys, net_labels
+    global DB, geo_starts, geo_ends, geo_ccs, geo_codes, geo_lats, geo_lons, net_starts, net_ends, net_keys, net_labels
     DATA.mkdir(parents=True, exist_ok=True)
-    print("lade länder", flush=True)
-    geo_starts, geo_ends, geo_ccs, geo_codes = load_geo()
+    print("lade orte", flush=True)
+    geo_starts, geo_ends, geo_ccs, geo_codes, geo_lats, geo_lons = load_geo()
     net_starts, net_ends, net_keys, net_labels = load_networks()
     print(f"geo-bereiche {len(geo_starts)} netze {len(net_starts)}", flush=True)
     DB = connect()
@@ -1930,6 +2305,7 @@ def main():
     import_fail2ban()
     import_recent_probes()
     import_recent_hits()
+    relocate_events()
     threading.Thread(target=follow_fail2ban, daemon=True).start()
     threading.Thread(target=follow_nginx, daemon=True).start()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)

@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Livemap</title>
+  <meta name="theme-color" content="#0f1216">
+  <script>
+    try {
+      document.documentElement.dataset.theme = localStorage.getItem("livemap.theme") === "light" ? "light" : "dark";
+    } catch (err) { /* ignore */ }
+  </script>
+  <meta name="robots" content="noindex, nofollow, noarchive, nosnippet">
+  <meta name="googlebot" content="noindex, nofollow, noarchive, nosnippet">
+  <meta name="referrer" content="no-referrer">
+  <link rel="icon" href="/favicon.png?v=4" type="image/png">
+  <link rel="stylesheet" href="/app.css?v=1.0.8">
+</head>
+<body class="login-concept">
+  <canvas id="loginMap" class="login-map" aria-hidden="true"></canvas>
+  <div class="login-veil" aria-hidden="true"></div>
+  <main class="login-stage">
+    <a class="login-brand" href="/login">
+      <img class="logo-for-dark" src="/logo-dark.png?v=5" alt="Livemap">
+      <img class="logo-for-light" src="/logo.png?v=5" alt="">
+    </a>
+    <section class="login-card" id="inviteCard">
+      <h1>Passwort festlegen</h1>
+      <p class="login-lead" id="inviteLead">Die Einladung wird geprüft.</p>
+      <form id="inviteForm" hidden>
+        <label class="field plain">
+          <span>Passwort</span>
+          <span class="field-box">
+            <input id="password" type="password" autocomplete="new-password" required>
+          </span>
+        </label>
+        <div class="pw-meter" id="pwMeter" data-rank=""><span></span></div>
+        <p class="pw-label" id="pwLabel"></p>
+        <label class="field plain">
+          <span>Wiederholen</span>
+          <span class="field-box">
+            <input id="again" type="password" autocomplete="new-password" required>
+          </span>
+        </label>
+        <button type="submit" id="submitBtn">Passwort speichern</button>
+        <p class="login-error" id="error" role="alert"></p>
+      </form>
+    </section>
+  </main>
+  <aside class="login-host" id="loginHost" hidden>
+    <p id="hostName"></p>
+    <p id="hostHostname" hidden></p>
+    <p id="hostHoster"></p>
+    <p id="hostPlace"></p>
+  </aside>
+  <script src="/login-demo.js?v=1"></script>
+  <script>
+    const token = decodeURIComponent(location.pathname.replace(/^\/invite\/?/, ""));
+    const card = document.getElementById("inviteCard");
+    const form = document.getElementById("inviteForm");
+    const lead = document.getElementById("inviteLead");
+    const error = document.getElementById("error");
+    const meter = document.getElementById("pwMeter");
+    const label = document.getElementById("pwLabel");
+    const common = new Set(["password","password1","password123","changeme","livemap","admin","admin123","qwerty","qwerty123","letmein","welcome","iloveyou","12345678","123456789","1234567890","passw0rd","abc12345","secret","secret123"]);
+    let username = "";
+
+    function rankPassword(pw, user) {
+      const labels = ["Too short", "Weak", "Fair", "Good", "Strong"];
+      if (pw.length < 12) return [0, labels[0]];
+      const low = pw.toLowerCase();
+      const name = (user || "").trim().toLowerCase();
+      if (common.has(low) || (name && (low === name || low.includes(name)))) return [1, labels[1]];
+      const classes = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].filter((re) => re.test(pw)).length;
+      if (classes < 2) return [1, labels[1]];
+      if (classes === 2) return [2, labels[2]];
+      if (pw.length < 16) return [3, labels[3]];
+      return [4, labels[4]];
+    }
+
+    function paintMeter() {
+      const pw = document.getElementById("password").value;
+      if (!pw) {
+        meter.dataset.rank = "";
+        label.textContent = "";
+        return;
+      }
+      const [rank, text] = rankPassword(pw, username);
+      meter.dataset.rank = String(rank);
+      label.textContent = text;
+    }
+
+    document.getElementById("password").addEventListener("input", paintMeter);
+
+    function done() {
+      card.innerHTML = '<h1>Fertig! Sie können loslegen</h1><p class="login-lead">Das Konto kann die Karte ansehen.</p><a class="setup-go" href="/">Livemap öffnen</a>';
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      error.textContent = "";
+      const password = document.getElementById("password").value;
+      const again = document.getElementById("again").value;
+      const [rank] = rankPassword(password, username);
+      if (rank < 3) {
+        error.textContent = "Passwort ist zu schwach";
+        return;
+      }
+      if (password !== again) {
+        error.textContent = "Passwörter stimmen nicht überein";
+        return;
+      }
+      const btn = document.getElementById("submitBtn");
+      btn.disabled = true;
+      try {
+        const res = await fetch("/api/invite/finish", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ token, password, again }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          error.textContent = data.error || "Einladung fehlgeschlagen";
+          btn.disabled = false;
+          return;
+        }
+        done();
+      } catch (err) {
+        error.textContent = "Netzwerkfehler";
+        btn.disabled = false;
+      }
+    });
+
+    fetch("/api/invite/open", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ token }),
+    }).then((res) => res.json().then((data) => ({ res, data })).catch(() => ({ res, data: {} })))
+      .then(({ res, data }) => {
+        if (!res.ok || !data.ok) {
+          lead.textContent = "Diese Einladung ist ungültig oder abgelaufen.";
+          return;
+        }
+        username = data.username;
+        lead.textContent = `Passwort für ${username} festlegen.`;
+        form.hidden = false;
+      })
+      .catch(() => {
+        lead.textContent = "Diese Einladung ist ungültig oder abgelaufen.";
+      });
+  </script>
+</body>
+</html>

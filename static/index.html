@@ -14,20 +14,53 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <link rel="icon" href="/favicon.png?v=4" type="image/png">
   <link rel="apple-touch-icon" href="/favicon.png?v=4">
-  <link rel="stylesheet" href="/app.css?v=55">
+  <link rel="stylesheet" href="/app.css?v=1.0.8">
 </head>
-<body class="panel-map">
+<body class="panel-map live-mode is-loading">
   <header>
-    <a class="brand" href="/">
-      <img class="brand-logo logo-for-dark" src="/logo-dark.png?v=5" alt="Livemap">
-      <img class="brand-logo logo-for-light" src="/logo.png?v=5" alt="">
-    </a>
-    <div class="header-meta">
-      <span id="linkStatus" class="link-status is-boot" title="Verbindung">…</span>
-      <span id="rateLabel" class="rate-label" title="Treffer in der letzten Minute">–/min</span>
-      <div id="topStrip" class="top-strip" aria-label="Häufigste Herkunft"></div>
+    <div class="sk sk-head" aria-hidden="true">
+      <span class="sk-side">
+        <span class="sk-brand">
+          <span class="sk-logo"></span>
+          <span class="sk-version"></span>
+        </span>
+        <span class="sk-status"><i></i><i></i></span>
+      </span>
+      <span class="sk-clockline"><i></i><i></i></span>
+      <span class="sk-side sk-side-right">
+        <span class="sk-figures"><i></i><i></i><i></i><i></i></span>
+        <span class="sk-account"></span>
+      </span>
     </div>
-    <div class="account" id="account">
+    <div class="header-side header-side-left">
+      <a class="brand" href="/">
+        <img class="brand-logo logo-for-dark" src="/logo-dark.png?v=5" alt="Livemap">
+        <img class="brand-logo logo-for-light" src="/logo.png?v=5" alt="">
+        <span class="brand-version" id="brandVersion">1.0.8</span>
+      </a>
+      <span id="linkStatus" class="link-status is-boot" title="Verbindung">verbinden …</span>
+    </div>
+    <div class="header-clock" aria-label="Datum und Uhrzeit">
+      <span>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.4" width="11.6" height="10.2" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2.2 6.6h11.6M5.2 2.2v2.2M10.8 2.2v2.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        <span id="headerDate">–</span><span id="headerYear"></span>
+      </span>
+      <span>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 4.8V8l2.2 1.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span id="headerTime">–</span>
+      </span>
+    </div>
+    <div class="header-side header-side-right">
+      <div class="header-figures">
+        <div class="stats">
+          <div class="stat"><strong id="statWindow">–</strong><span id="statWindowLabel">Fenster</span></div>
+          <div class="stat"><strong id="statHour">–</strong><span>Stunde</span></div>
+          <div class="stat"><strong id="statCountries">–</strong><span>Länder</span></div>
+          <div class="stat"><strong id="statIps">–</strong><span>IPs</span></div>
+        </div>
+        <div id="topStrip" class="top-strip" aria-label="Häufigste Herkunft"></div>
+      </div>
+      <div class="account" id="account">
       <button type="button" id="accountBtn" class="account-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="accountMenu">
         <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5.2" r="2.4" fill="currentColor"/><path fill="currentColor" d="M3.2 13.2c.6-2.3 2.3-3.4 4.8-3.4s4.2 1.1 4.8 3.4H3.2z"/></svg>
         <span id="accountName">Konto</span>
@@ -37,34 +70,51 @@
           <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M6.7 1.4h2.6l.3 1.7c.4.1.7.3 1 .6l1.6-.6 1.3 2.2-1.3 1.1c.1.3.1.6.1.9s0 .6-.1.9l1.3 1.1-1.3 2.2-1.6-.6c-.3.2-.6.4-1 .6l-.3 1.7H6.7l-.3-1.7a4 4 0 0 1-1-.6l-1.6.6-1.3-2.2 1.3-1.1a3 3 0 0 1 0-1.8L2.5 5.3l1.3-2.2 1.6.6c.3-.2.6-.4 1-.6l.3-1.7zM8 6.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6z"/></svg>
           Einstellungen
         </button>
+        <button type="button" id="analyticsBtn" role="menuitem">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 13.2h12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M3.2 10.4v2.2M6.4 7.2v5.4M9.6 8.6v4M12.8 4.4v8.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+          Analytics
+        </button>
         <button type="button" id="logoutBtn" class="account-logout" role="menuitem">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.4 3.2H3.6v9.6h2.8"/><path d="M7 8h6"/><path d="M11 5.2 13.8 8 11 10.8"/></svg>
           Ausloggen
         </button>
       </div>
     </div>
+    </div>
   </header>
   <nav class="mobile-tabs" id="mobileTabs" aria-label="Ansicht">
+    <div class="sk sk-tabs" aria-hidden="true"><span></span><span></span></div>
     <button type="button" data-panel="map" class="active">Karte</button>
     <button type="button" data-panel="log">Log</button>
   </nav>
-  <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <main>
     <section class="stage" aria-label="Weltkarte">
       <canvas id="map"></canvas>
+      <div class="boot" id="boot" role="status" aria-live="polite">
+        <div class="boot-mark">
+          <span class="boot-ring" aria-hidden="true"></span>
+          <img class="logo-for-dark" src="/logo-dark.png?v=5" alt="">
+          <img class="logo-for-light" src="/logo.png?v=5" alt="">
+        </div>
+        <p>Laden</p>
+      </div>
       <div id="flagLayer" class="flag-layer" hidden></div>
       <div id="hostBadge" class="host-badge" hidden>
         <img id="hostMark" alt="">
         <span id="hostName"></span>
       </div>
-      <p class="loading" id="loading">Logs werden gelesen …</p>
+      <p class="loading" id="loading" hidden>Logs werden gelesen …</p>
       <p class="quiet" id="quiet" hidden>Im Fenster ist es ruhig.</p>
       <div id="tip" class="tip" hidden></div>
       <section id="inspect" class="inspect" hidden>
         <div class="inspect-tools">
-          <button type="button" id="inspectCollapse" title="Einklappen" aria-label="Einklappen" aria-expanded="true">&lt;</button>
-          <button type="button" id="inspectClose" title="Schließen" aria-label="Schließen">×</button>
+          <button type="button" id="inspectCollapse" title="Einklappen" aria-label="Einklappen" aria-expanded="true">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.2 5.2 8 10 12.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button type="button" id="inspectClose" title="Schließen" aria-label="Schließen">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.2 4.2 11.8 11.8M11.8 4.2 4.2 11.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          </button>
         </div>
         <div id="detail" class="detail"></div>
       </section>
@@ -74,11 +124,11 @@
           <button type="button" id="settingsClose">Schließen</button>
         </div>
         <div class="settings-nav" role="tablist">
-          <button type="button" data-tab="account" class="active">Konto</button>
-          <button type="button" data-tab="fail2ban">Fail2ban</button>
-          <button type="button" data-tab="traffic">Traffic</button>
-          <button type="button" data-tab="services">Dienste</button>
-          <button type="button" data-tab="general">Allgemein</button>
+          <button type="button" data-tab="account" class="active"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5.2" r="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.2 13.2c.7-2.2 2.2-3.3 4.8-3.3s4.1 1.1 4.8 3.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>Konto</button>
+          <button type="button" data-tab="fail2ban"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.6 13 3.6v4.1c0 3-2.1 4.8-5 6.1-2.9-1.3-5-3.1-5-6.1V3.6L8 1.6z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>Fail2ban</button>
+          <button type="button" data-tab="services"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.4" width="11.6" height="4" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2.2" y="9.2" width="11.6" height="4" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="4.4" cy="4.4" r="0.6" fill="currentColor"/><circle cx="4.4" cy="11.2" r="0.6" fill="currentColor"/></svg>Dienste</button>
+          <button type="button" data-tab="general"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M12.6 3.4l-1.1 1.1M4.5 11.5l-1.1 1.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>Allgemein</button>
+          <button type="button" data-tab="administration" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5.2" cy="5" r="1.7" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="11" cy="5.4" r="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M1.8 12.6c.5-1.8 1.8-2.7 3.4-2.7s2.9.9 3.4 2.7M9.2 10.1c.8-.3 1.6-.4 2.2-.2 1.1.3 1.9 1.2 2.3 2.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>Administration</button>
         </div>
         <div class="settings-body">
           <section class="settings-panel" data-panel="account">
@@ -102,13 +152,14 @@
           <section class="settings-panel" data-panel="fail2ban" hidden>
             <div id="settingsFail2ban" class="settings-note">Wird gelesen …</div>
           </section>
-          <section class="settings-panel" data-panel="traffic" hidden>
-            <div id="settingsTraffic" class="settings-note">Wird gelesen …</div>
-          </section>
           <section class="settings-panel" data-panel="services" hidden>
             <div id="settingsServices" class="settings-note">Wird gelesen …</div>
           </section>
           <section class="settings-panel" data-panel="general" hidden>
+            <div class="theme-row">
+              <span>Aktuelles Fenster</span>
+              <button type="button" id="exportBtn" title="Aktuelles Fenster als CSV">CSV exportieren</button>
+            </div>
             <div class="theme-row">
               <span>Darstellung</span>
               <div class="theme-switch" role="group" aria-label="Darstellung">
@@ -118,6 +169,67 @@
             </div>
             <div id="settingsGeneral" class="settings-note">Wird gelesen …</div>
           </section>
+          <section class="settings-panel" data-panel="administration" hidden>
+            <p class="settings-note">Neue Konten können nur zusehen. Das Passwort legen sie selbst über den Einladungslink fest.</p>
+            <form id="inviteForm" autocomplete="off">
+              <label>Benutzer
+                <input id="inviteUser" name="username" autocomplete="off" spellcheck="false" required>
+              </label>
+              <div class="settings-row">
+                <button type="submit" class="solid" id="inviteSave">Einladen</button>
+                <p id="inviteMsg" class="settings-msg" role="status"></p>
+              </div>
+            </form>
+            <div id="inviteLink" class="invite-link" hidden></div>
+            <h3>Konten</h3>
+            <ul id="userList" class="user-list"></ul>
+            <h3>Offene Einladungen</h3>
+            <ul id="inviteList" class="user-list"></ul>
+            <div class="setup-reset">
+              <h3>Einrichtung zurücksetzen</h3>
+              <p class="settings-note">Alle Konten und offenen Einladungen werden gelöscht. Die Einrichtung startet neu, mit einem neuen Code.</p>
+              <button type="button" id="setupReset">Einrichtung zurücksetzen</button>
+              <div id="setupResetConfirm" hidden>
+                <p class="settings-note">Wirklich alle Konten löschen? Das lässt sich nicht rückgängig machen.</p>
+                <button type="button" id="setupResetYes" class="danger">Alle Konten löschen</button>
+                <button type="button" id="setupResetNo">Abbrechen</button>
+              </div>
+              <p id="setupResetMsg" class="settings-msg" role="status"></p>
+              <div id="setupResetCode" class="invite-link" hidden></div>
+            </div>
+          </section>
+        </div>
+      </section>
+      <section id="analytics" class="settings" hidden>
+        <div class="settings-head">
+          <h2>Analytics</h2>
+          <button type="button" id="analyticsClose">Schließen</button>
+        </div>
+        <div class="settings-body">
+          <div class="an-filters" id="anFilters">
+            <div id="anSpans"></div>
+            <div id="anCountriesPick"></div>
+            <div id="anServices"></div>
+          </div>
+          <div class="an-grid">
+            <article class="an-card">
+              <p><strong id="anHits">–</strong><span>Zugriffe</span></p>
+              <canvas id="anHitsChart" width="280" height="72"></canvas>
+            </article>
+            <article class="an-card">
+              <p><strong id="anBanned">–</strong><span>Gesperrt</span></p>
+              <canvas id="anBannedChart" width="280" height="72"></canvas>
+            </article>
+            <article class="an-card">
+              <p><strong id="anIps">–</strong><span>Adressen</span></p>
+              <canvas id="anIpsChart" width="280" height="72"></canvas>
+            </article>
+            <article class="an-card">
+              <p><strong id="anCountries">–</strong><span>Länder</span></p>
+              <canvas id="anCountriesChart" width="280" height="72"></canvas>
+            </article>
+          </div>
+          <table class="settings-table" id="anKinds"></table>
         </div>
       </section>
       <section id="countryCard" class="country-card" hidden>
@@ -135,19 +247,29 @@
       </section>
     </section>
     <aside>
-      <div class="summary">
-        <div class="summary-top">
-          <div class="stats">
-            <div class="stat"><strong id="statWindow">–</strong><span>Fenster</span></div>
-            <div class="stat"><strong id="statHour">–</strong><span>Stunde</span></div>
-            <div class="stat"><strong id="statCountries">–</strong><span>Länder</span></div>
-            <div class="stat"><strong id="statIps">–</strong><span>IPs</span></div>
-          </div>
-          <div class="summary-side">
-            <p class="clock" id="clock">–</p>
-            <button type="button" id="exportBtn" class="export-btn" title="Aktuelles Fenster als CSV">CSV</button>
-          </div>
+      <div class="sk sk-side" aria-hidden="true">
+        <div class="sk-summary">
+          <span class="sk-ips"><i></i><i></i><i></i><i></i><i></i></span>
         </div>
+        <div class="sk-loghead">
+          <div class="sk-row sk-roles"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="sk-row sk-filters"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <span class="sk-fold"></span>
+          <span class="sk-domain"></span>
+          <span class="sk-search"></span>
+        </div>
+        <div class="sk-feed">
+          <div class="sk-entry"><i></i><i></i><span><i></i><i></i><i></i></span><i></i></div>
+          <div class="sk-entry"><i></i><i></i><span><i></i><i></i><i></i></span><i></i></div>
+          <div class="sk-entry"><i></i><i></i><span><i></i><i></i><i></i></span><i></i></div>
+          <div class="sk-entry"><i></i><i></i><span><i></i><i></i><i></i></span><i></i></div>
+          <div class="sk-entry"><i></i><i></i><span><i></i><i></i><i></i></span><i></i></div>
+          <div class="sk-entry"><i></i><i></i><span><i></i><i></i><i></i></span><i></i></div>
+          <div class="sk-entry"><i></i><i></i><span><i></i><i></i><i></i></span><i></i></div>
+          <div class="sk-entry"><i></i><i></i><span><i></i><i></i><i></i></span><i></i></div>
+        </div>
+      </div>
+      <div class="summary">
         <div id="topIps" class="top-ips" aria-label="Auffälligste IPs"></div>
       </div>
       <div class="loghead">
@@ -169,7 +291,14 @@
   </main>
   <div id="ctx" class="ctx" hidden></div>
 
-  <footer id="controls">
+  <footer id="controls" class="live">
+    <div class="sk sk-foot" aria-hidden="true">
+      <div class="sk-transport">
+        <span class="sk-live"></span>
+        <span class="sk-replay"></span>
+      </div>
+      <span class="sk-wave"></span>
+    </div>
     <button type="button" id="controlsFold" class="edge-fold" aria-expanded="true" aria-controls="controls" title="Steuerung einklappen">
       <span class="edge-fold-label">Steuerung</span>
     </button>
@@ -188,10 +317,11 @@
     </div>
     <div class="wave-wrap">
       <div id="waveMarks" class="wave-marks" aria-hidden="true"></div>
+      <div id="waveStars" class="wave-stars"></div>
       <canvas id="wave" aria-label="Zeitstrahl mit Angriffsspitzen"></canvas>
-      <span id="cursorLabel">–</span>
+      <span id="cursorLabel" hidden>–</span>
     </div>
   </footer>
-  <script src="/app.js?v=47"></script>
+  <script src="/app.js?v=1.0.8"></script>
 </body>
 </html>

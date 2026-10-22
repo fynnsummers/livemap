@@ -1,12 +1,13 @@
 const KINDS = [
   ["page", "Seite", "#b7c0c8"],
   ["asset", "Datei", "#8d867c"],
-  ["probe", "Sonde", "#9a9286"],
+  ["probe", "Exploit", "#9a9286"],
   ["ssh", "SSH", "#c45c3e"],
   ["scan", "Scan", "#6d8ea3"],
   ["flood", "Flut", "#c4894a"],
   ["login", "Login", "#a86b52"],
   ["mail", "Mail", "#7d9a6a"],
+  ["self", "Self", "#7aa0b8"],
 ];
 const KIND = Object.fromEntries(KINDS.map(([id, label, color]) => [id, { label, color }]));
 const ROLES = [
@@ -17,9 +18,10 @@ const ROLES = [
   ["org", "Netze"],
 ];
 const ATTACKS = new Set(["ssh", "scan", "flood", "login", "mail", "probe"]);
+const BAN_KINDS = new Set(["ssh", "scan", "flood", "login", "mail"]);
 const THREAT = {
   ssh: 1, flood: 0.95, scan: 0.85, login: 0.8, mail: 0.75, probe: 0.7,
-  page: 0.15, asset: 0.08,
+  page: 0.15, asset: 0.08, self: 0.12,
 };
 const SPEEDS = [
   [1, "1×"],
@@ -33,6 +35,8 @@ const WINDOWS = [
   [2 * 3600, "2 Std"],
   [12 * 3600, "12 Std"],
 ];
+
+const LIVE_SPAN = 2 * 60;
 
 const state = {
   server: { lat: 52.52, lon: 13.405, city: "Berlin", name: "Infynnite" },
@@ -62,6 +66,8 @@ const state = {
   lookupIp: "",
   link: "boot",
   query: "",
+  selfIp: "",
+  stars: [],
 };
 
 const canvas = document.getElementById("map");
@@ -77,7 +83,21 @@ function flagSrc(cc) {
   return /^[A-Za-z]{2}$/.test(cc || "") ? `/flags/${cc.toLowerCase()}.svg` : "";
 }
 
+function isSelf(row) {
+  return !!(row && state.selfIp && row.ip === state.selfIp);
+}
+
+function viewKind(row) {
+  return isSelf(row) ? "self" : row && row.kind;
+}
+
+function arcColor(ev) {
+  if (isSelf(ev)) return "#7aa0b8";
+  return (KIND[ev.kind] || KIND.probe).color;
+}
+
 function markSrc(row) {
+  if (isSelf(row)) return "/marks/self.svg";
   if (row.role === "org" && row.org) return `/marks/${row.org}.svg`;
   if (row.role === "burst" || row.org === "burst") return "/marks/burst.svg";
   if (row.role === "botnet") return "/marks/botnet.svg";
@@ -175,11 +195,27 @@ function formatTime(ts) {
   }).format(d);
 }
 
-function formatClock(date) {
-  return new Intl.DateTimeFormat("de-DE", {
-    timeZone: "Europe/Berlin",
-    weekday: "short", hour: "2-digit", minute: "2-digit", second: "2-digit",
-  }).format(date);
+function paintHeaderClock() {
+  const now = new Date();
+  const dateEl = document.getElementById("headerDate");
+  const timeEl = document.getElementById("headerTime");
+  if (dateEl) {
+    const parts = new Intl.DateTimeFormat("de-DE", {
+      timeZone: "Europe/Berlin",
+      weekday: "short", day: "2-digit", month: "2-digit", year: "numeric",
+    }).formatToParts(now);
+    const part = (type) => parts.find((item) => item.type === type)?.value || "";
+    const weekday = part("weekday");
+    dateEl.textContent = `${weekday.endsWith(".") ? weekday : `${weekday}.`}, ${part("day")}.${part("month")}.`;
+    const yearEl = document.getElementById("headerYear");
+    if (yearEl) yearEl.textContent = part("year");
+  }
+  if (timeEl) {
+    timeEl.textContent = new Intl.DateTimeFormat("de-DE", {
+      timeZone: "Europe/Berlin",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    }).format(now);
+  }
 }
 
 const GEO = {
@@ -371,6 +407,34 @@ function traceGeometry(geometry, box, context = ctx) {
 
 let mapLayer = null;
 let mapLayerKey = "";
+let mapPose = null;
+let mapBuiltAt = 0;
+
+function cameraShifted(pose) {
+  if (!pose) return true;
+  let dLon = pose.lon - cam.lon;
+  if (dLon > 180) dLon -= 360;
+  if (dLon < -180) dLon += 360;
+  const dScale = Math.abs(pose.scale - cam.scale) / Math.max(pose.scale, 0.001);
+  return Math.abs(dLon) > 0.004 || Math.abs(pose.lat - cam.lat) > 0.004 || dScale > 0.012;
+}
+
+function blitLayer(layer, box, pose) {
+  let dLon = pose.lon - cam.lon;
+  if (dLon > 180) dLon -= 360;
+  if (dLon < -180) dLon += 360;
+  const k = cam.scale / Math.max(0.2, pose.scale);
+  const dx = (dLon / 360) * box.w * cam.scale;
+  const dy = ((cam.lat - pose.lat) / 180) * box.h * cam.scale;
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  ctx.save();
+  ctx.translate(cx + dx, cy + dy);
+  ctx.scale(k, k);
+  ctx.translate(-cx, -cy);
+  ctx.drawImage(layer, 0, 0);
+  ctx.restore();
+}
 
 function themePaint() {
   const light = document.documentElement.dataset.theme === "light";
@@ -398,9 +462,13 @@ function themePaint() {
 
 function ensureMapLayer(box) {
   const paint = themePaint();
-  const key = `${canvas.width}x${canvas.height}|${box.x},${box.y},${box.w},${box.h}|${cam.lon.toFixed(2)}|${cam.lat.toFixed(2)}|${cam.scale.toFixed(3)}|${document.documentElement.dataset.theme || "dark"}`;
-  if (mapLayer && mapLayerKey === key) return;
+  const key = `${canvas.width}x${canvas.height}|${box.x},${box.y},${box.w},${box.h}|${document.documentElement.dataset.theme || "dark"}`;
+  const moving = !!camAnim || cameraShifted(mapPose);
+  if (mapLayer && mapLayerKey === key && mapPose && moving && (camAnim || performance.now() - mapBuiltAt < 160)) return;
+  if (mapLayer && mapLayerKey === key && mapPose && !cameraShifted(mapPose)) return;
   mapLayerKey = key;
+  mapPose = { lon: cam.lon, lat: cam.lat, scale: cam.scale };
+  mapBuiltAt = performance.now();
   if (!mapLayer) mapLayer = document.createElement("canvas");
   if (mapLayer.width !== canvas.width || mapLayer.height !== canvas.height) {
     mapLayer.width = canvas.width;
@@ -439,7 +507,8 @@ function ensureMapLayer(box) {
 function drawMap(box) {
   mapBox = box;
   ensureMapLayer(box);
-  ctx.drawImage(mapLayer, 0, 0);
+  if (mapPose && cameraShifted(mapPose)) blitLayer(mapLayer, box, mapPose);
+  else ctx.drawImage(mapLayer, 0, 0);
   for (const feature of state.features) {
     const goal = feature === hoverItem || feature === focusItem ? 1 : 0;
     feature.edge += ((goal - feature.edge) * (reduced ? 1 : 0.14));
@@ -677,7 +746,7 @@ function domainOk(row) {
 }
 
 function passView(row) {
-  if (!row || !state.filters.has(row.kind)) return false;
+  if (!row || !state.filters.has(viewKind(row))) return false;
   if (!domainOk(row)) return false;
   if (state.onlyBanned && !state.bans.has(row.ip)) return false;
   return true;
@@ -707,8 +776,8 @@ let shownCache = [];
 let shownKey = "";
 
 function visibleEvents() {
-  const from = state.cursor - state.windowSec;
-  const key = `${state.hits.length}|${state.events.length}|${[...state.filters].join()}|${state.domain}|${state.query}|${state.onlyBanned ? 1 : 0}|${state.banRev}|${state.windowSec}|${Math.floor(state.cursor * 4)}`;
+  const from = viewFrom();
+  const key = `${state.follow ? 1 : 0}|${state.hits.length}|${state.events.length}|${[...state.filters].join()}|${state.domain}|${state.query}|${state.onlyBanned ? 1 : 0}|${state.banRev}|${state.windowSec}|${Math.floor(state.cursor * 4)}`;
   if (key === shownKey) return shownCache;
   shownKey = key;
   const seen = new Set();
@@ -734,7 +803,8 @@ function visibleEvents() {
 }
 
 function eventHeatWeight(row) {
-  const age = Math.min(1, Math.max(0, (state.cursor - row.ts) / Math.max(1, state.windowSec)));
+  const span = replaySpan() ? Math.max(1, state.cursor - viewFrom()) : state.windowSec;
+  const age = Math.min(1, Math.max(0, (state.cursor - row.ts) / Math.max(1, span)));
   const threat = THREAT[row.kind] ?? 0.2;
   const roleBoost = row.role === "botnet" ? 1.35 : row.role === "burst" ? 1.15 : 1;
   return threat * roleBoost * (1 - age * 0.7);
@@ -761,17 +831,21 @@ function markerFade() {
 
 let heatLayer = null;
 let heatStamp = 0;
-let heatCam = "";
+let heatPose = null;
 
 function drawPointHeat(box, shown) {
   const nowMs = performance.now();
-  const camKey = `${canvas.width}x${canvas.height}|${cam.lon.toFixed(2)}|${cam.lat.toFixed(2)}|${cam.scale.toFixed(3)}`;
-  if (heatLayer && heatCam === camKey && nowMs - heatStamp < 200) {
+  const moving = !!camAnim || cameraShifted(heatPose);
+  if (heatLayer && heatPose && moving && (camAnim || nowMs - heatStamp < 180)) {
+    blitLayer(heatLayer, box, heatPose);
+    return;
+  }
+  if (heatLayer && heatPose && !moving && nowMs - heatStamp < 280) {
     ctx.drawImage(heatLayer, 0, 0);
     return;
   }
   heatStamp = nowMs;
-  heatCam = camKey;
+  heatPose = { lon: cam.lon, lat: cam.lat, scale: cam.scale };
   if (!heatLayer) heatLayer = document.createElement("canvas");
   if (heatLayer.width !== canvas.width || heatLayer.height !== canvas.height) {
     heatLayer.width = canvas.width;
@@ -784,57 +858,94 @@ function drawPointHeat(box, shown) {
   ctx.drawImage(heatLayer, 0, 0);
 }
 
+function densityRamp(t) {
+  const u = Math.min(1, Math.max(0, t));
+  const stops = [
+    [0, [28, 108, 64]],
+    [0.38, [118, 184, 52]],
+    [0.68, [226, 196, 58]],
+    [1, [208, 42, 34]],
+  ];
+  let i = 0;
+  while (i < stops.length - 2 && u > stops[i + 1][0]) i += 1;
+  const [t0, c0] = stops[i];
+  const [t1, c1] = stops[i + 1];
+  const k = (u - t0) / Math.max(0.001, t1 - t0);
+  return c0.map((v, n) => Math.round(v + (c1[n] - v) * k));
+}
+
+let heatInk = null;
+
 function paintHeatSpots(g, box, shown) {
   if (!shown.length) return;
-  const cellDeg = 0.38;
-  const groups = new Map();
+  const width = g.canvas.width;
+  const height = g.canvas.height;
+  if (!heatInk) heatInk = document.createElement("canvas");
+  if (heatInk.width !== width || heatInk.height !== height) {
+    heatInk.width = width;
+    heatInk.height = height;
+  }
+  const ink = heatInk.getContext("2d");
+  ink.setTransform(1, 0, 0, 1, 0, 0);
+  ink.clearRect(0, 0, width, height);
+  ink.globalCompositeOperation = "lighter";
+  const cellDeg = 0.18;
+  const cells = new Map();
   let max = 0;
   for (const row of shown) {
     if (row.lat == null || row.lon == null) continue;
-    const [x, y] = project(row.lon, row.lat, box);
-    if (x < box.x - 30 || y < box.y - 30 || x > box.x + box.w + 30 || y > box.y + box.h + 30) continue;
-    const cc = row.cc || "";
-    let cells = groups.get(cc);
-    if (!cells) {
-      cells = new Map();
-      groups.set(cc, cells);
-    }
     const key = `${Math.round(row.lon / cellDeg)}:${Math.round(row.lat / cellDeg)}`;
     const w = eventHeatWeight(row);
-    const grade = attackGrade(row);
     const prev = cells.get(key);
-    if (!prev) cells.set(key, { x, y, w, n: 1, grade });
+    if (!prev) cells.set(key, { lon: row.lon, lat: row.lat, w, n: 1 });
     else {
-      const nextW = prev.w + w;
-      prev.x = (prev.x * prev.n + x) / (prev.n + 1);
-      prev.y = (prev.y * prev.n + y) / (prev.n + 1);
-      prev.grade = nextW > 0 ? (prev.grade * prev.w + grade * w) / nextW : grade;
-      prev.w = nextW;
+      prev.lon = (prev.lon * prev.n + row.lon) / (prev.n + 1);
+      prev.lat = (prev.lat * prev.n + row.lat) / (prev.n + 1);
+      prev.w += w;
       prev.n += 1;
     }
     const cur = cells.get(key);
     if (cur.w > max) max = cur.w;
   }
   max = Math.max(max, 0.001);
-  const radius = Math.min(34, Math.max(2.4, (0.72 / 180) * box.h * cam.scale));
-  const spots = [];
-  for (const cells of groups.values()) spots.push(...cells.values());
-  spots.sort((a, b) => a.grade - b.grade);
-  g.save();
-  for (const spot of spots) {
-    const t = Math.pow(spot.w / max, 0.5);
-    const tone = mapHeatColor(spot.grade);
-    const grad = g.createRadialGradient(spot.x, spot.y, 0, spot.x, spot.y, radius);
-    const core = 0.28 + t * 0.6;
-    grad.addColorStop(0, tone.replace("rgb(", "rgba(").replace(")", `, ${core})`));
-    grad.addColorStop(0.22, tone.replace("rgb(", "rgba(").replace(")", `, ${core * 0.38})`));
-    grad.addColorStop(1, "rgba(0,0,0,0)");
-    g.fillStyle = grad;
-    g.beginPath();
-    g.arc(spot.x, spot.y, radius, 0, Math.PI * 2);
-    g.fill();
+  const radius = Math.min(36, Math.max(9, 7 + cam.scale * 1.1));
+  const blur = Math.min(16, Math.max(5, radius * 0.42));
+  for (const spot of cells.values()) {
+    const [x, y] = project(spot.lon, spot.lat, box);
+    if (x < box.x - radius || y < box.y - radius || x > box.x + box.w + radius || y > box.y + box.h + radius) continue;
+    const t = Math.pow(spot.w / max, 0.55);
+    const alpha = 0.16 + t * 0.78;
+    const grad = ink.createRadialGradient(x, y, 0, x, y, radius);
+    grad.addColorStop(0, `rgba(255,255,255,${alpha})`);
+    grad.addColorStop(0.42, `rgba(255,255,255,${alpha * 0.42})`);
+    grad.addColorStop(1, "rgba(255,255,255,0)");
+    ink.fillStyle = grad;
+    ink.beginPath();
+    ink.arc(x, y, radius, 0, Math.PI * 2);
+    ink.fill();
   }
+  ink.globalCompositeOperation = "source-over";
+  g.save();
+  g.filter = `blur(${blur}px)`;
+  g.drawImage(heatInk, 0, 0);
+  g.filter = "none";
   g.restore();
+  const img = g.getImageData(0, 0, width, height);
+  const data = img.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const a = data[i + 3];
+    if (a < 8) {
+      data[i + 3] = 0;
+      continue;
+    }
+    const t = Math.min(1, a / 168);
+    const [r, gv, b] = densityRamp(t);
+    data[i] = r;
+    data[i + 1] = gv;
+    data[i + 2] = b;
+    data[i + 3] = Math.min(198, Math.round(28 + t * 175));
+  }
+  g.putImageData(img, 0, 0);
 }
 
 let banSpotKey = "";
@@ -942,7 +1053,7 @@ function trimQueue() {
     if (last && sameMoment(last[0], ev)) last.push(ev);
     else groups.push([ev]);
   }
-  const keepCount = state.playing && state.speed >= 120 ? 20 : 10;
+  const keepCount = state.playing && state.speed >= 120 ? 24 : 48;
   const kept = groups.slice(-keepCount);
   const keep = new Set(kept.flat().map(eventKey));
   for (const ev of flight.queued) {
@@ -952,7 +1063,7 @@ function trimQueue() {
 }
 
 function launchNext(now) {
-  const maxActive = reduced ? 2 : (state.playing && state.speed >= 120 ? 12 : 7);
+  const maxActive = reduced ? 2 : (state.playing && state.speed >= 120 ? 12 : 8);
   while (flight.actives.length < maxActive && flight.queued.length) {
     trimQueue();
     if (!flight.queued.length) return;
@@ -966,8 +1077,9 @@ function launchNext(now) {
     flight.queued = rest;
     if (!batch.length) break;
     const stagger = flight.actives.length ? 40 : 0;
+    const dur = reduced ? 280 : (flight.queued.length > 14 ? 480 : 1100);
     for (const ev of batch) {
-      flight.actives.push({ ev, t0: now + stagger });
+      flight.actives.push({ ev, t0: now + stagger, dur });
       pulseCountry(ev.cc, 0.85);
     }
   }
@@ -1007,7 +1119,8 @@ function markFlightsDoneUpTo(ts) {
 function stepFlights(shown, now) {
   // Bei hohem Replay-Tempo Flüge kürzer halten, damit die Schlange nicht stockt.
   const speedFactor = state.playing && !state.follow ? Math.min(6, Math.max(1, state.speed / 45)) : 1;
-  const duration = reduced ? 280 : Math.max(180, 1100 / speedFactor);
+  const backlog = flight.queued.length > 14;
+  const duration = reduced ? 280 : Math.max(160, (backlog ? 480 : 1100) / speedFactor);
   if (!flight.primed) {
     flight.primed = true;
     if (state.follow) {
@@ -1042,7 +1155,7 @@ function stepFlights(shown, now) {
     const delta = current - previous;
     // Nur Seek / Live-Nachholen stumm überspringen — Replay (auch 10 Min/s) immer animieren.
     const scrubJump = !state.playing && !state.follow && delta > 2.5;
-    const liveCatchup = state.follow && delta > 2.5;
+    const liveCatchup = state.follow && delta > 8;
     if (scrubJump || liveCatchup) {
       markFlightsDoneUpTo(current);
       flight.queued = [];
@@ -1060,12 +1173,12 @@ function stepFlights(shown, now) {
       still.push(item);
       continue;
     }
-    if (now - item.t0 >= duration) {
+    if (now - item.t0 >= (item.dur || duration)) {
       flight.done.add(eventKey(item.ev));
-      flight.trail.push({ ev: item.ev, until: now + 2200, color: (KIND[item.ev.kind] || KIND.probe).color });
+      flight.trail.push({ ev: item.ev, until: now + 2200, color: arcColor(item.ev) });
       flight.impacts.push({
         x: 0, y: 0, t0: now,
-        color: (KIND[item.ev.kind] || KIND.probe).color,
+        color: arcColor(item.ev),
         pending: true,
         ev: item.ev,
       });
@@ -1127,8 +1240,8 @@ function render() {
     if (now < item.t0) continue;
     const ev = item.ev;
     const origin = project(ev.lon, ev.lat, box);
-    const progress = Math.min(1, (now - item.t0) / (reduced ? 280 : 1100));
-    drawArc(origin, target, (KIND[ev.kind] || KIND.probe).color, progress, true, 1);
+    const progress = Math.min(1, (now - item.t0) / (item.dur || (reduced ? 280 : 1100)));
+    drawArc(origin, target, arcColor(ev), progress, true, 1);
   }
   for (const item of flight.impacts) {
     if (item.pending) {
@@ -1149,15 +1262,15 @@ function render() {
   ctx.strokeStyle = "rgba(168, 184, 170, 0.35)";
   ctx.lineWidth = 1.2;
   ctx.strokeRect(box.x, box.y, box.w, box.h);
-  if (now - uiStamp > 250) {
+  if (now - uiStamp > (camAnim ? 700 : 320)) {
     uiStamp = now;
     paintCountry();
     document.getElementById("quiet").hidden = shown.length > 0 || !state.features.length || (state.onlyBanned && bannedSpots().length > 0);
-    paintStats(shown);
+    paintStats();
+    paintAnalytics();
     paintFeed(shown);
     paintDomains();
     paintBanButton();
-    document.getElementById("clock").textContent = formatClock(new Date());
   }
   keepPlayheadInView();
   drawWave();
@@ -1185,31 +1298,142 @@ function timeRange() {
   return { start, end, span: Math.max(1, end - start) };
 }
 
-function waveView() {
-  const full = timeRange();
+let waveSpanShown = 0;
+let waveFlight = null;
+
+function targetWaveSpan(full) {
   const minSpan = 8;
   const maxZoom = Math.max(1, full.span / minSpan);
   state.waveZoom = Math.min(maxZoom, Math.max(1, state.waveZoom || 1));
-  if (state.follow) {
-    const liveBase = Math.min(full.span, Math.max(state.windowSec * 6, 45 * 60));
-    const span = Math.max(minSpan, liveBase / state.waveZoom);
-    const end = full.end;
-    const start = Math.max(full.start, end - span);
-    state.waveOrigin = start;
-    return { start, end, span: end - start };
+  if (state.follow) return Math.min(full.span, LIVE_SPAN);
+  return Math.max(minSpan, full.span / state.waveZoom);
+}
+
+function waveBarCount() {
+  return Math.max(
+    48,
+    Math.min(220, Math.floor((waveCssW || 800) / (1.4 + Math.log2(Math.max(1, state.waveZoom)) * 2.4))),
+  );
+}
+
+function startWaveFlight(toSpan, pinEnd) {
+  const full = timeRange();
+  const fromSpan = Math.max(8, waveSpanShown || toSpan);
+  const fromStart = Number.isFinite(state.waveOrigin) ? state.waveOrigin : full.end - fromSpan;
+  const span = Math.max(8, Math.min(full.span, toSpan));
+  const toStart = pinEnd ? Math.max(full.start, full.end - span) : full.start;
+  const bars = waveBarCount();
+  const binSec = Math.max(0.05, span / bars);
+  const origin = Math.floor(toStart / binSec) * binSec;
+  const count = Math.min(4800, Math.ceil((toStart + span - origin) / binSec) + 2);
+  const snap = document.createElement("canvas");
+  if (wave.width && wave.height) {
+    snap.width = wave.width;
+    snap.height = wave.height;
+    snap.getContext("2d").drawImage(wave, 0, 0);
   }
-  const span = Math.max(minSpan, full.span / state.waveZoom);
-  let start = state.waveOrigin == null ? full.start : state.waveOrigin;
-  start = Math.min(Math.max(start, full.start), Math.max(full.start, full.end - span));
+  waveFlight = {
+    t0: performance.now(),
+    dur: 860,
+    fromStart,
+    fromSpan,
+    toSpan: span,
+    toStart,
+    pinEnd: !!pinEnd,
+    snap: snap.width ? snap : null,
+    snapStart: fromStart,
+    snapSpan: fromSpan,
+    bake: bakeWave(binSec, origin, count),
+  };
+}
+
+function bakeWave(binSec, origin, count) {
+  const counts = new Array(count).fill(0);
+  const peaks = new Array(count).fill(0);
+  const attacks = new Array(count).fill(0);
+  const selves = new Array(count).fill(0);
+  const t0 = origin;
+  const t1 = origin + count * binSec;
+  const ingest = (row) => {
+    if (!passView(row) || row.ts < t0 || row.ts >= t1) return;
+    const index = Math.floor((row.ts - origin) / binSec);
+    if (index < 0 || index >= count) return;
+    counts[index] += 1;
+    if (isSelf(row)) {
+      selves[index] += 1;
+      return;
+    }
+    const threat = THREAT[row.kind] ?? 0.2;
+    peaks[index] = Math.max(peaks[index], threat);
+    if (threat >= 0.7 || ATTACKS.has(row.kind)) attacks[index] += 1;
+  };
+  for (const hit of state.hits) ingest(hit);
+  for (const ev of state.events) ingest(ev);
+  const max = Math.max(1, ...counts);
+  const maxAttacks = Math.max(1, ...attacks);
+  const bins = counts.map((n, i) => {
+    if (!n) return null;
+    const peak = peaks[i];
+    const attackAmp = Math.pow(attacks[i] / maxAttacks, 0.52);
+    const volumeAmp = Math.pow(n / max, 0.5);
+    return {
+      amp: Math.min(1, Math.max(volumeAmp, attackAmp, peak >= 0.7 ? 0.28 : 0)),
+      heat: Math.min(1, peak * 0.82 + (attacks[i] ? 0.18 : 0)),
+      ts: origin + (i + 0.5) * binSec,
+      self: selves[i] > 0 && selves[i] === n,
+    };
+  });
+  return { binSec, origin, bins };
+}
+
+function easeInOut(t) {
+  const x = Math.min(1, Math.max(0, t));
+  return x < 0.5 ? 2 * x * x : 1 - ((-2 * x + 2) ** 2) / 2;
+}
+
+function waveView() {
+  const full = timeRange();
+  let span;
+  let start;
+  if (waveFlight) {
+    const flight = waveFlight;
+    const t = Math.min(1, (performance.now() - flight.t0) / flight.dur);
+    const u = easeInOut(t);
+    const fromLog = Math.log(Math.max(8, flight.fromSpan));
+    const toLog = Math.log(Math.max(8, flight.toSpan));
+    span = Math.exp(fromLog + (toLog - fromLog) * u);
+    if (flight.pinEnd) {
+      const fromEnd = flight.fromStart + flight.fromSpan;
+      const toEnd = flight.toStart + flight.toSpan;
+      const end = fromEnd + (toEnd - fromEnd) * u;
+      start = end - span;
+    } else {
+      start = flight.fromStart + (flight.toStart - flight.fromStart) * u;
+    }
+    const lo = Math.min(flight.fromStart, flight.toStart);
+    const hi = Math.max(flight.fromStart + flight.fromSpan, flight.toStart + flight.toSpan);
+    span = Math.max(8, Math.min(Math.max(8, hi - lo), span));
+    start = Math.min(Math.max(start, lo), Math.max(lo, hi - span));
+    if (t >= 1) waveFlight = null;
+  }
+  if (!waveFlight) {
+    span = targetWaveSpan(full);
+    if (state.follow) start = full.end - span;
+    else start = state.waveOrigin == null ? full.start : state.waveOrigin;
+    span = Math.max(8, Math.min(full.span, span));
+    start = Math.min(Math.max(start, full.start), Math.max(full.start, full.end - span));
+  }
+  waveSpanShown = span;
   state.waveOrigin = start;
   return { start, end: start + span, span };
 }
 
 function keepPlayheadInView() {
-  if (state.follow || !state.playing) return;
+  if (waveFlight || state.follow || !state.playing) return;
   const full = timeRange();
-  const span = Math.max(8, full.span / Math.max(1, state.waveZoom));
-  let start = state.waveOrigin == null ? full.start : state.waveOrigin;
+  const view = waveView();
+  const span = view.span;
+  let start = view.start;
   const right = start + span * 0.9;
   const left = start + span * 0.1;
   if (state.cursor > right) start = state.cursor - span * 0.82;
@@ -1237,6 +1461,60 @@ let waveCssW = 0;
 let waveCssH = 0;
 let waveMeasureAt = 0;
 
+function drawFrozenWave(flight, start, span, width, height, dpr) {
+  wctx.clearRect(0, 0, width, height);
+  wctx.fillStyle = themePaint().sea;
+  wctx.fillRect(0, 0, width, height);
+  const bake = flight.bake;
+  const barW = Math.max(dpr, (bake.binSec / span) * width * 0.86);
+  const mid = height / 2;
+  const i0 = Math.max(0, Math.floor((start - bake.origin) / bake.binSec) - 1);
+  const i1 = Math.min(bake.bins.length, Math.ceil((start + span - bake.origin) / bake.binSec) + 1);
+  for (let i = i0; i < i1; i += 1) {
+    const bin = bake.bins[i];
+    if (!bin || bin.amp <= 0) continue;
+    const x = ((bin.ts - start) / span) * width - barW / 2;
+    if (x + barW < 0 || x > width) continue;
+    const bar = Math.max(bin.heat >= 0.7 ? 3 : 1.5, bin.amp * height * 0.48);
+    wctx.fillStyle = bin.self ? "rgba(122, 160, 184, 0.9)" : ampColor(bin.amp, bin.heat);
+    wctx.fillRect(x, mid - bar, barW, bar * 2);
+  }
+  if (flight.snap) {
+    const t = Math.min(1, (performance.now() - flight.t0) / flight.dur);
+    const u = easeInOut(t);
+    const cover = u < 0.72 ? 1 : Math.max(0, 1 - (u - 0.72) / 0.28);
+    wctx.save();
+    wctx.globalAlpha = cover;
+    const x = ((flight.snapStart - start) / span) * width;
+    const w = (flight.snapSpan / span) * width;
+    wctx.drawImage(flight.snap, x, 0, w, height);
+    wctx.restore();
+  }
+  wctx.strokeStyle = "rgba(90, 100, 110, 0.55)";
+  wctx.beginPath();
+  wctx.moveTo(0, mid);
+  wctx.lineTo(width, mid);
+  wctx.stroke();
+  const head = state.follow
+    ? width - dpr
+    : Math.min(width - dpr, Math.max(dpr, ((state.cursor - start) / span) * width));
+  wctx.fillStyle = "#e8edf2";
+  wctx.fillRect(head - dpr, 0, dpr * 1.8, height);
+  const cssW = width / dpr;
+  for (const hostId of ["waveMarks", "waveStars"]) {
+    const host = document.getElementById(hostId);
+    if (!host) continue;
+    for (const btn of host.children) {
+      const ts = Number(btn.dataset.ts);
+      if (!Number.isFinite(ts)) continue;
+      const px = ((ts - start) / span) * cssW;
+      btn.style.left = `${px}px`;
+      btn.classList.toggle("is-off", px < -16 || px > cssW + 16);
+    }
+  }
+  waveGeom = { start, span, slot: (bake.binSec / span) * width, scrollPx: 0, dpr, binSec: bake.binSec, height };
+}
+
 function drawWave() {
   const nowMs = performance.now();
   if (!waveCssW || nowMs - waveMeasureAt > 400) {
@@ -1253,12 +1531,14 @@ function drawWave() {
     wave.height = height;
     waveKey = "";
   }
+  const flight = waveFlight;
   const { start, span } = waveView();
+  if (flight && waveFlight && flight.bake) {
+    drawFrozenWave(flight, start, span, width, height, dpr);
+    return;
+  }
   // Weiter rausgezoomt = mehr Balken, damit Spitzen nicht zu einem Block verschmieren.
-  const bars = Math.max(
-    48,
-    Math.min(220, Math.floor(waveCssW / (1.4 + Math.log2(Math.max(1, state.waveZoom)) * 2.4))),
-  );
+  const bars = waveBarCount();
   const binSec = span / bars;
   // Absolutes Zeitraster + Sub-Pixel-Scroll: stabil im Replay, fließend im Live.
   const leftBin = Math.floor(start / binSec);
@@ -1266,12 +1546,13 @@ function drawWave() {
   const slot = width / bars;
   const scrollPx = scrollFrac * slot;
   const drawBins = bars + 1;
-  const key = `${state.events.length}|${state.hits.length}|${[...state.filters].join()}|${state.domain}|${state.onlyBanned ? 1 : 0}|${state.banRev}|${bars}|${leftBin}|${binSec.toFixed(4)}|${state.waveZoom.toFixed(3)}|${state.follow ? 1 : 0}`;
+  const key = `${state.selfIp}|${state.events.length}|${state.hits.length}|${[...state.filters].join()}|${state.domain}|${state.onlyBanned ? 1 : 0}|${state.banRev}|${bars}|${leftBin}|${binSec.toFixed(4)}|${state.waveZoom.toFixed(3)}|${state.follow ? 1 : 0}`;
   if (key !== waveKey) {
     waveKey = key;
     const counts = new Array(drawBins).fill(0);
     const peaks = new Array(drawBins).fill(0);
     const attacks = new Array(drawBins).fill(0);
+    const selves = new Array(drawBins).fill(0);
     const t0 = leftBin * binSec;
     const t1 = t0 + drawBins * binSec;
     const ingest = (row) => {
@@ -1279,8 +1560,12 @@ function drawWave() {
       if (row.ts < t0 || row.ts >= t1) return;
       const index = Math.floor(row.ts / binSec) - leftBin;
       if (index < 0 || index >= drawBins) return;
-      const threat = THREAT[row.kind] ?? 0.2;
       counts[index] += 1;
+      if (isSelf(row)) {
+        selves[index] += 1;
+        return;
+      }
+      const threat = THREAT[row.kind] ?? 0.2;
       peaks[index] = Math.max(peaks[index], threat);
       if (threat >= 0.7 || ATTACKS.has(row.kind)) attacks[index] += 1;
     };
@@ -1296,7 +1581,13 @@ function drawWave() {
       const volumeAmp = Math.pow(count / max, zoomOut ? 0.42 : 0.58);
       const amp = Math.min(1, Math.max(volumeAmp, attackAmp * (zoomOut ? 1 : 0.85), peak >= 0.7 ? 0.28 : 0));
       const heat = Math.min(1, peak * 0.82 + (attacks[i] ? 0.18 : 0));
-      return { amp, heat, ts: leftBin * binSec + (i + 0.5) * binSec, attacks: attacks[i] };
+      return {
+        amp,
+        heat,
+        ts: leftBin * binSec + (i + 0.5) * binSec,
+        attacks: attacks[i],
+        self: selves[i] > 0 && selves[i] === count,
+      };
     });
   }
   wctx.clearRect(0, 0, width, height);
@@ -1320,7 +1611,9 @@ function drawWave() {
     const x = index * slot - scrollPx;
     if (x + barW < 0 || x > width) return;
     // Je größer der Balken, desto dunkler; Threat färbt leicht Richtung Rot.
-    wctx.fillStyle = ampColor(amp, heat);
+    let fill = bin.self ? "rgba(122, 160, 184, 0.9)" : ampColor(amp, heat);
+    if (index === waveHover) fill = liftColor(fill, 0.34);
+    wctx.fillStyle = fill;
     wctx.fillRect(x, mid - bar, barW, bar * 2);
   });
   wctx.restore();
@@ -1345,34 +1638,158 @@ function drawWave() {
   wctx.fillStyle = "#e8edf2";
   wctx.fill();
 
+  waveGeom = { start, span, slot, scrollPx, dpr, binSec, height };
   paintWaveMarks(start, span, width, height, slot, scrollPx, dpr);
+  paintWaveStars(start, span);
 
   const label = document.getElementById("cursorLabel");
   if (label) {
-    const pct = (head / width) * 100;
-    label.textContent = formatTime(state.cursor);
-    label.style.left = `${pct}%`;
-    label.dataset.edge = pct < 8 ? "left" : pct > 92 ? "right" : "mid";
+    const hover = waveHover >= 0 ? waveBins[waveHover] : null;
+    if (!hover || hover.ts == null) {
+      label.hidden = true;
+    } else {
+      const box = barBox(waveHover);
+      const cssW = width / dpr;
+      const pct = box ? (box.cx / cssW) * 100 : 50;
+      label.hidden = false;
+      label.textContent = formatTime(hover.ts);
+      label.style.left = `${pct}%`;
+      label.dataset.edge = pct < 12 ? "left" : pct > 88 ? "right" : "mid";
+    }
   }
 }
 
 let waveMarkKey = "";
+let waveHover = -1;
+let waveGeom = { start: 0, span: 1, slot: 1, scrollPx: 0, dpr: 1, binSec: 1, height: 1 };
 
 function warningIconSvg() {
   return `<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.4 1.2 13.4h13.6L8 1.4zm0 3.3.9 5.1H7.1L8 4.7zM8 12.2a.9.9 0 1 1 0-1.8.9.9 0 0 1 0 1.8z"/></svg>`;
+}
+
+function starIconSvg() {
+  return `<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.4 9.7 6.2h5l-4 3.1 1.5 4.8L8 11.2 3.8 14.1 5.3 9.3l-4-3.1h5z"/></svg>`;
+}
+
+function loadStars() {
+  try {
+    const raw = JSON.parse(localStorage.getItem("livemap.stars") || "[]");
+    state.stars = Array.isArray(raw) ? raw.map(Number).filter(Number.isFinite).slice(0, 48) : [];
+  } catch (err) {
+    state.stars = [];
+  }
+}
+
+function saveStars() {
+  try { localStorage.setItem("livemap.stars", JSON.stringify(state.stars)); } catch (err) { /* ignore */ }
+}
+
+function starTolerance() {
+  return Math.max(0.4, waveGeom.binSec || 1);
+}
+
+function starIndex(ts) {
+  const tol = starTolerance();
+  return state.stars.findIndex((item) => Math.abs(item - ts) <= tol);
+}
+
+function setStar(ts, on) {
+  const index = starIndex(ts);
+  if (on && index < 0) {
+    state.stars.push(ts);
+    if (state.stars.length > 48) state.stars.shift();
+  } else if (!on && index >= 0) state.stars.splice(index, 1);
+  saveStars();
+  waveStarKey = "";
+  waveMarkKey = "";
+}
+
+function liftColor(rgb, amount) {
+  const parts = String(rgb).match(/\d+/g);
+  if (!parts || parts.length < 3) return rgb;
+  const next = parts.slice(0, 3).map((part) => Math.min(255, Math.round(Number(part) + (255 - Number(part)) * amount)));
+  return `rgb(${next[0]}, ${next[1]}, ${next[2]})`;
+}
+
+function binAtClientX(clientX) {
+  if (!waveGeom.slot) return null;
+  const rect = wave.getBoundingClientRect();
+  const x = (clientX - rect.left) * waveGeom.dpr;
+  const index = Math.floor((x + waveGeom.scrollPx) / waveGeom.slot);
+  const bin = waveBins[index];
+  if (!bin || !bin.amp || bin.ts == null) return null;
+  return { index, ts: bin.ts };
+}
+
+function starBin(ts) {
+  const half = starTolerance();
+  let best = -1;
+  let dist = half;
+  for (let i = 0; i < waveBins.length; i += 1) {
+    const bin = waveBins[i];
+    if (!bin || !bin.amp || bin.ts == null) continue;
+    const gap = Math.abs(bin.ts - ts);
+    if (gap < dist) {
+      dist = gap;
+      best = i;
+    }
+  }
+  return best;
+}
+
+function barBox(index) {
+  const bin = waveBins[index];
+  if (!bin) return null;
+  const { slot, scrollPx, dpr, height } = waveGeom;
+  const amp = bin.amp || 0;
+  const heat = bin.heat || 0;
+  const bar = Math.max(heat >= 0.7 ? 3 : 1.5, amp * height * 0.48);
+  const barW = Math.max(dpr * 1.2, slot - dpr * 0.4);
+  const x = index * slot - scrollPx;
+  return {
+    cx: (x + barW / 2) / dpr,
+    top: Math.max(0, (height / 2 - bar) / dpr - 13),
+  };
+}
+
+function openStarMenu(x, y, ts) {
+  const menu = document.getElementById("ctx");
+  if (!menu || ts == null) return;
+  menu.replaceChildren();
+  const marked = starIndex(ts) >= 0;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = marked ? "Stern entfernen" : "Stern setzen";
+  btn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeContextMenu();
+    setStar(ts, !marked);
+  });
+  menu.appendChild(btn);
+  menu.hidden = false;
+  const pad = 8;
+  const width = menu.offsetWidth || 160;
+  const height = menu.offsetHeight || 36;
+  menu.style.left = `${Math.min(x, window.innerWidth - width - pad)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - height - pad)}px`;
 }
 
 function paintWaveMarks(start, span, width, height, slot, scrollPx, dpr) {
   const host = document.getElementById("waveMarks");
   if (!host || !waveBins.length) return;
   const candidates = [];
-  for (let i = 1; i < waveBins.length - 1; i += 1) {
+  const selfMarks = [];
+  for (let i = 0; i < waveBins.length; i += 1) {
     const bin = waveBins[i];
     if (!bin || !bin.amp) continue;
     const prev = waveBins[i - 1]?.amp || 0;
     const next = waveBins[i + 1]?.amp || 0;
     const localPeak = bin.amp >= prev && bin.amp >= next;
-    if (!localPeak) continue;
+    if (bin.self) {
+      if (localPeak) selfMarks.push({ i, amp: bin.amp, self: true, ts: bin.ts || start });
+      continue;
+    }
+    if (i === 0 || i === waveBins.length - 1 || !localPeak) continue;
     if (bin.amp < 0.52 && bin.heat < 0.72) continue;
     candidates.push({ i, amp: bin.amp, heat: bin.heat || 0, ts: bin.ts || start });
   }
@@ -1383,25 +1800,44 @@ function paintWaveMarks(start, span, width, height, slot, scrollPx, dpr) {
     if (picked.some((other) => Math.abs(other.i - item.i) < 3)) continue;
     picked.push(item);
   }
+  selfMarks.sort((a, b) => b.amp - a.amp);
+  for (const item of selfMarks) {
+    if (picked.filter((other) => other.self).length >= 8) break;
+    if (picked.some((other) => Math.abs(other.i - item.i) < 3)) continue;
+    picked.push(item);
+  }
   picked.sort((a, b) => a.i - b.i);
-  const key = `${state.waveZoom.toFixed(3)}|${Math.floor(start)}|${picked.map((p) => `${p.i}:${p.heat.toFixed(2)}`).join(",")}`;
+  const key = picked.map((p) => `${p.self ? "s" : "w"}${Math.round(p.ts)}:${(p.heat || 0).toFixed(2)}`).join("|");
   const cssWidth = width / dpr;
-  if (key !== waveMarkKey) {
+  const place = (btn, item) => {
+    const xCss = ((item.i * slot - scrollPx) + slot * 0.5) / dpr;
+    btn.style.left = `${xCss}px`;
+    btn.classList.toggle("is-off", xCss < -16 || xCss > cssWidth + 16);
+    btn.classList.toggle("on", Math.abs((state.cursor || 0) - item.ts) <= starTolerance());
+  };
+  if (key !== waveMarkKey || host.children.length !== picked.length) {
     waveMarkKey = key;
     host.replaceChildren();
     for (const item of picked) {
-      const xCss = ((item.i * slot - scrollPx) + slot * 0.5) / dpr;
-      if (xCss < -8 || xCss > cssWidth + 8) continue;
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = `wave-mark${item.heat >= 0.85 || item.amp >= 0.85 ? " danger" : " warn"}`;
-      btn.style.left = `${xCss}px`;
-      btn.title = item.heat >= 0.85 ? `Starke Spitze · ${formatTime(item.ts)}` : `Auffällige Spitze · ${formatTime(item.ts)}`;
-      btn.innerHTML = warningIconSvg();
+      btn.className = item.self
+        ? "wave-mark self"
+        : `wave-mark${item.heat >= 0.85 || item.amp >= 0.85 ? " danger" : " warn"}`;
+      btn.dataset.ts = String(item.ts);
+      btn.setAttribute("aria-label", item.self ? "Eigener Client" : item.heat >= 0.85 ? "Starke Spitze" : "Auffällige Spitze");
+      if (item.self) {
+        const icon = document.createElement("img");
+        icon.src = "/marks/self.svg";
+        icon.alt = "";
+        btn.appendChild(icon);
+      } else {
+        btn.innerHTML = warningIconSvg();
+      }
       btn.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        state.follow = false;
+        if (state.follow) return;
         state.playing = false;
         state.cursor = item.ts;
         state.born.clear();
@@ -1409,22 +1845,86 @@ function paintWaveMarks(start, span, width, height, slot, scrollPx, dpr) {
         syncLive();
         syncPlay();
         feed.dataset.key = "";
-        waveKey = "";
       });
+      btn.addEventListener("pointerenter", () => {
+        waveHover = item.i;
+      });
+      btn.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openStarMenu(event.clientX, event.clientY, item.ts);
+      });
+      place(btn, item);
       host.appendChild(btn);
     }
   } else {
-    const buttons = host.children;
-    let n = 0;
-    for (const item of picked) {
-      const xCss = ((item.i * slot - scrollPx) + slot * 0.5) / dpr;
-      const btn = buttons[n];
-      if (!btn) break;
-      btn.style.left = `${xCss}px`;
-      btn.hidden = xCss < -8 || xCss > cssWidth + 8;
-      n += 1;
+    picked.forEach((item, index) => {
+      const btn = host.children[index];
+      if (btn) place(btn, item);
+    });
+  }
+}
+
+let waveStarKey = "";
+
+function paintWaveStars(start, span) {
+  const host = document.getElementById("waveStars");
+  if (!host) return;
+  const cssW = waveCssW || 1;
+  const cssH = waveCssH || 52;
+  const placed = [];
+  const seen = new Set();
+  for (const ts of state.stars) {
+    const index = starBin(ts);
+    if (index < 0 || seen.has(index)) continue;
+    seen.add(index);
+    const box = barBox(index);
+    if (!box || box.cx < -16 || box.cx > cssW + 16) continue;
+    placed.push({ ts: waveBins[index].ts, index, cx: box.cx, top: box.top });
+  }
+  placed.sort((a, b) => a.cx - b.cx);
+  const key = placed.map((item) => item.ts.toFixed(2)).join(",");
+  if (key !== waveStarKey) {
+    waveStarKey = key;
+    host.replaceChildren();
+    for (const item of placed) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "wave-star";
+      btn.dataset.ts = String(item.ts);
+      btn.setAttribute("aria-label", "Stern");
+      btn.innerHTML = starIconSvg();
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (state.follow) return;
+        state.playing = false;
+        state.cursor = item.ts;
+        state.born.clear();
+        resetFlights();
+        syncLive();
+        syncPlay();
+        feed.dataset.key = "";
+      });
+      btn.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openStarMenu(event.clientX, event.clientY, item.ts);
+      });
+      btn.addEventListener("pointerenter", () => {
+        waveHover = item.index;
+      });
+      host.appendChild(btn);
     }
   }
+  const buttons = [...host.children];
+  placed.forEach((item, index) => {
+    const btn = buttons[index];
+    const box = barBox(item.index);
+    if (!btn || !box) return;
+    btn.style.left = `${box.cx}px`;
+    btn.style.top = `${box.top}px`;
+  });
 }
 
 function ampColor(amp, heat = 0) {
@@ -1505,30 +2005,45 @@ function latestTs() {
   return Math.max(ev, hit, Date.now() / 1000 - 3600);
 }
 
-function paintStats(shown) {
-  const now = state.follow ? Date.now() / 1000 + 5 : state.cursor;
-  const hourAgo = now - 3600;
-  let hour = 0;
+function windowStatLabel(sec) {
+  const known = WINDOWS.find(([value]) => value === sec);
+  if (known) return known[1];
+  if (sec % 3600 === 0) return `${sec / 3600} Std`;
+  if (sec % 60 === 0) return `${sec / 60} Min`;
+  return `${sec} Sek`;
+}
+
+function rowsBetween(from, now) {
   const seen = new Set();
-  for (const row of state.hits) {
-    if (row.ts < hourAgo || row.ts > now || !passView(row)) continue;
-    hour += 1;
-    seen.add(`${row.ts}|${row.ip}|${row.kind}`);
-  }
-  for (const ev of state.events) {
-    if (ev.ts < hourAgo || ev.ts > now || !passView(ev)) continue;
-    if (seen.has(`${ev.ts}|${ev.ip}|${ev.kind}`)) continue;
-    hour += 1;
-  }
-  const countries = new Set(shown.map((ev) => ev.cc).filter(Boolean));
-  const ips = new Set(shown.map((ev) => ev.ip).filter(Boolean));
-  document.getElementById("statWindow").textContent = shown.length.toLocaleString("de-DE");
-  document.getElementById("statHour").textContent = hour.toLocaleString("de-DE");
+  const rows = [];
+  const take = (row) => {
+    if (!row || row.ts < from || row.ts > now || !passView(row)) return;
+    const id = `${row.ts}|${row.ip}|${row.kind}`;
+    if (seen.has(id)) return;
+    seen.add(id);
+    rows.push(row);
+  };
+  for (const row of state.hits) take(row);
+  for (const row of state.events) take(row);
+  return rows;
+}
+
+function paintStats() {
+  const now = state.follow ? Date.now() / 1000 + 5 : state.cursor;
+  const span = state.follow ? LIVE_SPAN : state.windowSec;
+  const windowRows = rowsBetween(now - span, now);
+  const hourRows = rowsBetween(now - 3600, now);
+  const countries = new Set(windowRows.map((row) => row.cc).filter(Boolean));
+  const ips = new Set(windowRows.map((row) => row.ip).filter(Boolean));
+  document.getElementById("statWindow").textContent = windowRows.length.toLocaleString("de-DE");
+  const windowLabel = document.getElementById("statWindowLabel");
+  if (windowLabel) windowLabel.textContent = state.follow ? "2 Min" : windowStatLabel(state.windowSec);
+  document.getElementById("statHour").textContent = hourRows.length.toLocaleString("de-DE");
   document.getElementById("statCountries").textContent = countries.size.toLocaleString("de-DE");
   const ipEl = document.getElementById("statIps");
   if (ipEl) ipEl.textContent = ips.size.toLocaleString("de-DE");
-  paintTopIps(shown);
-  paintHeader(shown, now);
+  paintTopIps(windowRows);
+  paintHeader(windowRows, now);
 }
 
 let topIpKey = "";
@@ -1573,14 +2088,17 @@ function paintTopIps(shown) {
     mono.className = "mono";
     mono.textContent = item.ip;
     const strong = document.createElement("strong");
-    strong.textContent = String(item.count);
+    strong.textContent = `(${item.count.toLocaleString("de-DE")})`;
     btn.append(mono, strong);
     btn.addEventListener("contextmenu", (event) => {
       event.preventDefault();
       event.stopPropagation();
+      hideIpHover();
       const match = rows.find((row) => row.ip === item.ip);
       openContextMenu(event.clientX, event.clientY, match || { ip: item.ip, cc: item.cc, name: item.name });
     });
+    btn.addEventListener("pointerenter", () => scheduleIpHover(btn, item.ip));
+    btn.addEventListener("pointerleave", () => scheduleHideIpHover());
     btn.addEventListener("click", () => {
       state.query = item.ip;
       const box = document.getElementById("searchBox");
@@ -1599,50 +2117,60 @@ function paintTopIps(shown) {
 }
 
 let headerKey = "";
-let toastTimer = 0;
+
+function armDesktopNotes() {
+  if (typeof Notification === "undefined" || Notification.permission !== "default") return;
+  const ask = () => {
+    document.removeEventListener("pointerdown", ask);
+    Notification.requestPermission().catch(() => {});
+  };
+  document.addEventListener("pointerdown", ask);
+}
+
+function hostLine() {
+  const server = state.server || {};
+  const name = server.name || "Infynnite";
+  const where = [server.hostname, server.ipv4].filter(Boolean).join(" / ");
+  return { name, where: where ? ` (${where})` : "" };
+}
 
 function setLinkStatus(mode) {
   state.link = mode;
   const el = document.getElementById("linkStatus");
+  const version = document.getElementById("brandVersion");
+  if (version && state.server && state.server.version) version.textContent = state.server.version;
   if (!el) return;
+  const { name, where } = hostLine();
   el.classList.remove("is-live", "is-boot", "is-down");
   if (mode === "live") {
     el.classList.add("is-live");
-    el.textContent = "Live";
-    el.title = "Stream verbunden";
+    el.textContent = `connected to ${name}${where}`;
+    el.title = `Stream verbunden · ${name}${where}`;
   } else if (mode === "down") {
     el.classList.add("is-down");
-    el.textContent = "Offline";
-    el.title = "Stream getrennt – verbinde neu …";
+    el.textContent = `nicht verbunden · ${name}${where}`;
+    el.title = `Stream getrennt · ${name}${where}`;
   } else {
     el.classList.add("is-boot");
-    el.textContent = "Laden";
-    el.title = "Verbindung wird aufgebaut";
+    el.textContent = `verbinden · ${name}${where}`;
+    el.title = `Verbindung wird aufgebaut · ${name}${where}`;
   }
 }
 
 function showToast(title, sub = "", tone = "") {
-  const host = document.getElementById("toasts");
-  if (!host) return;
-  const node = document.createElement("div");
-  node.className = `toast${tone ? ` ${tone}` : ""}`;
-  const strong = document.createElement("strong");
-  strong.textContent = title;
-  node.appendChild(strong);
-  if (sub) {
-    const line = document.createElement("span");
-    line.className = "toast-sub";
-    line.textContent = sub;
-    node.appendChild(line);
-  }
-  host.appendChild(node);
-  const kill = () => node.remove();
-  node.addEventListener("click", kill);
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    if (host.childElementCount > 4) host.firstChild?.remove();
-  }, 40);
-  setTimeout(kill, 4200);
+  const send = () => {
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    try {
+      const note = new Notification(title, {
+        body: sub || "",
+        icon: new URL("/favicon.png", location.origin).href,
+        tag: tone === "hot" ? "livemap-alert" : `livemap-${title}`,
+      });
+      setTimeout(() => note.close(), tone === "hot" ? 8000 : 5000);
+    } catch (err) { /* ignore */ }
+  };
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  send();
 }
 
 const threatSeen = new Map();
@@ -1672,20 +2200,7 @@ function noticeThreat(row) {
   }, 3500);
 }
 
-function paintHeader(shown, now) {
-  const minuteAgo = now - 60;
-  let rate = 0;
-  const seen = new Set();
-  for (const row of state.hits) {
-    if (row.ts < minuteAgo || row.ts > now || !passView(row)) continue;
-    rate += 1;
-    seen.add(`${row.ts}|${row.ip}|${row.kind}`);
-  }
-  for (const ev of state.events) {
-    if (ev.ts < minuteAgo || ev.ts > now || !passView(ev)) continue;
-    if (seen.has(`${ev.ts}|${ev.ip}|${ev.kind}`)) continue;
-    rate += 1;
-  }
+function paintHeader(shown) {
   const byCc = new Map();
   for (const row of shown) {
     if (!row.cc) continue;
@@ -1694,11 +2209,9 @@ function paintHeader(shown, now) {
     byCc.set(row.cc, cur);
   }
   const tops = [...byCc.values()].sort((a, b) => b.count - a.count).slice(0, 5);
-  const key = `${state.link}|${rate}|${tops.map((t) => `${t.cc}:${t.count}`).join(",")}`;
+  const key = tops.map((t) => `${t.cc}:${t.count}`).join(",");
   if (key === headerKey) return;
   headerKey = key;
-  const rateEl = document.getElementById("rateLabel");
-  if (rateEl) rateEl.textContent = `${rate.toLocaleString("de-DE")}/min`;
   const strip = document.getElementById("topStrip");
   if (!strip) return;
   strip.replaceChildren();
@@ -1716,7 +2229,7 @@ function paintHeader(shown, now) {
     }
     btn.append(document.createTextNode(item.cc));
     const strong = document.createElement("strong");
-    strong.textContent = String(item.count);
+    strong.textContent = `(${item.count.toLocaleString("de-DE")})`;
     btn.appendChild(strong);
     btn.addEventListener("click", () => focusCountryByCode(item.cc, { soft: false }));
     strip.appendChild(btn);
@@ -1792,7 +2305,10 @@ function loadPrefs() {
     if (!raw) return;
     const prefs = JSON.parse(raw);
     if (typeof prefs.role === "string") state.role = prefs.role;
-    if (Array.isArray(prefs.filters)) state.filters = new Set(prefs.filters.filter((id) => KIND[id]));
+    if (Array.isArray(prefs.filters)) {
+      state.filters = new Set(prefs.filters.filter((id) => KIND[id]));
+      if (!prefs.selfMigrated) state.filters.add("self");
+    }
     if (typeof prefs.domain === "string") state.domain = prefs.domain;
     if (typeof prefs.onlyBanned === "boolean") state.onlyBanned = prefs.onlyBanned;
     if (Number.isFinite(prefs.windowSec)) state.windowSec = prefs.windowSec;
@@ -1808,6 +2324,7 @@ function savePrefs() {
     localStorage.setItem("livemap.prefs", JSON.stringify({
       role: state.role,
       filters: [...state.filters],
+      selfMigrated: true,
       domain: state.domain,
       onlyBanned: state.onlyBanned,
       windowSec: state.windowSec,
@@ -1870,9 +2387,15 @@ function asHit(ev) {
   };
 }
 
+function isPlainVisit(row) {
+  const status = Number(row.status || 0);
+  return (row.kind === "page" || row.kind === "asset") && status >= 200 && status < 400;
+}
+
 function ipBurstStats(rows) {
   const byIp = new Map();
   for (const row of rows) {
+    if (isPlainVisit(row)) continue;
     let bucket = byIp.get(row.ip);
     if (!bucket) {
       bucket = { count: 0, paths: new Set(), apis: 0, fails: 0, attacks: 0, first: row.ts, last: row.ts };
@@ -1894,6 +2417,12 @@ function rankHit(row, burst) {
   let org = row.org || "";
   let org_name = row.org_name || "";
   let heat = THREAT[row.kind] ?? 0.2;
+  if (isPlainVisit(row) && !ATTACKS.has(row.kind)) {
+    role = role === "org" ? "org" : "traffic";
+    if (org === "burst") org = "";
+    if (org_name === "Burst") org_name = "";
+    heat = THREAT[row.kind] ?? 0.15;
+  }
   if (role === "botnet") heat = Math.max(heat, 0.9);
   if (role === "org") heat = Math.max(heat, 0.25);
   if (burst) {
@@ -1926,12 +2455,40 @@ function rankHit(row, burst) {
   };
 }
 
+function replaySpan() {
+  return !state.follow && !!state.domain;
+}
+
+function dataStartTs() {
+  const dataStart = Math.min(
+    state.events.length ? state.events[0].ts : Infinity,
+    state.hits.length ? state.hits[0].ts : Infinity,
+  );
+  return Number.isFinite(dataStart) ? dataStart : state.cursor - state.windowSec;
+}
+
+function viewFrom() {
+  if (replaySpan()) return dataStartTs();
+  return state.cursor - state.windowSec;
+}
+
+function rowsSince(list, from) {
+  const out = [];
+  for (let i = lowerBoundTs(list, from); i < list.length; i += 1) {
+    const row = list[i];
+    if (row.ts > state.cursor) break;
+    if (!passView(row)) continue;
+    out.push(row);
+  }
+  return out;
+}
+
 function logRows(unlimited = false) {
-  const from = state.cursor - state.windowSec;
-  const hits = state.hits.filter((row) => row.ts <= state.cursor && row.ts >= from && passView(row));
+  const from = viewFrom();
+  const hits = rowsSince(state.hits, from);
   const seen = new Set(hits.map((row) => `${row.ts}|${row.ip}|${row.kind}`));
-  const attacks = state.events
-    .filter((ev) => ev.ts <= state.cursor && ev.ts >= from && passView(ev) && !seen.has(`${ev.ts}|${ev.ip}|${ev.kind}`))
+  const attacks = rowsSince(state.events, from)
+    .filter((ev) => !seen.has(`${ev.ts}|${ev.ip}|${ev.kind}`))
     .map(asHit);
   let rows = hits.concat(attacks);
   const bursts = ipBurstStats(rows);
@@ -1943,7 +2500,7 @@ function logRows(unlimited = false) {
   if (q) {
     rows = rows.filter((row) => {
       const hay = [
-        row.ip, row.cc, row.name, row.path, row.host, row.method, row.kind, row.role, row.org_name, row.status,
+        row.ip, row.cc, row.name, row.path, row.host, row.method, viewKind(row), row.role, row.org_name, row.status,
         ...clientMarks(row).map((part) => part.label),
       ].map((part) => String(part || "").toLowerCase()).join(" ");
       return hay.includes(q);
@@ -1954,11 +2511,12 @@ function logRows(unlimited = false) {
   } else {
     rows.sort((a, b) => (b.ts - a.ts) || (b.heat - a.heat) || (a.ip || "").localeCompare(b.ip || ""));
   }
-  return unlimited ? rows : rows.slice(0, 220);
+  if (unlimited) return rows;
+  return rows.slice(0, state.role === "all" ? 180 : 220);
 }
 
 function rowLine(row) {
-  const kind = (KIND[row.kind] || KIND.page).label;
+  const kind = (KIND[viewKind(row)] || KIND.page).label;
   const burst = row.burstCount >= 8 ? `${row.burstCount}×` : "";
   const tag = row.role === "burst" || row.org_name === "Burst" ? "Burst" : (row.org_name || "");
   const code = row.status ? String(row.status) : "";
@@ -1969,13 +2527,63 @@ function rowLine(row) {
   return `${where} · ${target}`;
 }
 
+function methodTone(method) {
+  const name = String(method || "").toUpperCase();
+  if (name === "GET" || name === "HEAD") return "get";
+  if (name === "POST") return "post";
+  if (name === "PUT" || name === "PATCH") return "put";
+  if (name === "DELETE") return "del";
+  return "other";
+}
+
+function statusTone(code) {
+  const n = Number(code);
+  if (n >= 500) return "s5";
+  if (n >= 400) return "s4";
+  if (n >= 300) return "s3";
+  if (n >= 200) return "s2";
+  return "other";
+}
+
+function rowPill(text, tone) {
+  const pill = document.createElement("em");
+  pill.className = `pill pill-${tone}`;
+  pill.textContent = text;
+  return pill;
+}
+
+function fillRowMeta(meta, row) {
+  const kind = (KIND[viewKind(row)] || KIND.page).label;
+  const burst = row.burstCount >= 8 ? `${row.burstCount}×` : "";
+  const tag = row.role === "burst" || row.org_name === "Burst" ? "Burst" : (row.org_name || "");
+  const size = row.bytes ? formatBytes(row.bytes) : "";
+  meta.append(document.createTextNode(kind));
+  if (row.method) {
+    meta.append(document.createTextNode(" · "), rowPill(row.method, methodTone(row.method)));
+  }
+  if (row.status) {
+    meta.append(document.createTextNode(" · "), rowPill(String(row.status), statusTone(row.status)));
+  }
+  const rest = [tag, burst, size, row.path || row.ip].filter(Boolean);
+  if (rest.length) meta.append(document.createTextNode(` · ${rest.join(" · ")}`));
+}
+
+let selfSeen = null;
+
+function feedRowId(ev) {
+  return `${ev.ts}|${ev.ip}|${ev.kind}|${ev.path || ""}`;
+}
+
 function paintFeed() {
   const rows = logRows();
-  const key = rows.map((ev) => `${ev.ts}|${ev.ip}|${ev.kind}|${ev.path || ""}`).join("~") + "|" + state.role + "|" + state.query + "|" + (state.picked && `${state.picked.ts}|${state.picked.ip}|${state.picked.path || ""}`);
+  const key = rows.map(feedRowId).join("~") + "|" + state.role + "|" + state.query + "|" + state.selfIp + "|" + (state.picked && `${state.picked.ts}|${state.picked.ip}|${state.picked.path || ""}`);
   if (feed.dataset.key === key) return;
   feed.dataset.key = key;
+  const prime = selfSeen == null;
+  if (prime) selfSeen = new Set();
   feed.replaceChildren();
   if (!rows.length) {
+    if (prime) selfSeen = null;
     const li = document.createElement("li");
     li.className = "empty";
     li.textContent = state.query ? "Keine Treffer für die Suche." : "Keine Zugriffe in diesem Fenster.";
@@ -1988,7 +2596,14 @@ function paintFeed() {
     if (state.picked && state.picked.ts === ev.ts && state.picked.ip === ev.ip && (state.picked.path || "") === (ev.path || "")) li.classList.add("selected");
     if (ev.role === "burst") li.classList.add("burst");
     if (ev.role === "botnet" || (ev.heat || 0) >= 0.9) li.classList.add("hot");
-    if (state.bans.has(ev.ip)) {
+    const self = isSelf(ev);
+    const rowId = feedRowId(ev);
+    if (self) {
+      li.classList.add("self");
+      if (!prime && !selfSeen.has(rowId) && !reduced) li.classList.add("self-in");
+      selfSeen.add(rowId);
+      li.title = "Eigener Client";
+    } else if (state.bans.has(ev.ip)) {
       li.classList.add("banned");
       li.title = "Gesperrt";
     }
@@ -2000,13 +2615,14 @@ function paintFeed() {
     else flag.hidden = true;
     const mark = document.createElement("img");
     mark.className = "mark";
-    mark.alt = "";
+    mark.alt = self ? "Eigener Client" : "";
+    mark.title = self ? "Eigener Client" : "";
     mark.src = markSrc(ev);
     const text = document.createElement("div");
     const title = document.createElement("strong");
     title.textContent = ev.name || ev.cc || "Unbekannt";
     const meta = document.createElement("span");
-    meta.textContent = rowLine(ev);
+    fillRowMeta(meta, ev);
     const sub = document.createElement("span");
     sub.className = "feed-ip";
     sub.textContent = [ev.ip, ev.host].filter(Boolean).join(" · ");
@@ -2031,8 +2647,13 @@ function paintFeed() {
       state.picked = ev;
       if (ev.lat != null) state.selected = ev;
       feed.dataset.key = "";
+      hideIpHover();
       openContextMenu(event.clientX, event.clientY, ev);
     });
+    if (ev.ip) {
+      li.addEventListener("pointerenter", () => scheduleIpHover(li, ev.ip));
+      li.addEventListener("pointerleave", () => scheduleHideIpHover());
+    }
     feed.appendChild(li);
   }
   paintDetail();
@@ -2290,7 +2911,6 @@ function setInspectCollapsed(collapsed) {
   const btn = document.getElementById("inspectCollapse");
   if (!inspect || !btn) return;
   inspect.classList.toggle("is-collapsed", collapsed);
-  btn.textContent = collapsed ? ">" : "<";
   btn.title = collapsed ? "Ausklappen" : "Einklappen";
   btn.setAttribute("aria-label", btn.title);
   btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
@@ -2391,6 +3011,7 @@ function renderCountrySheet() {
   const key = `country|${focusItem.cc}|${focusItem.de || focusItem.name || ""}`;
   if (box.dataset.key !== key || box.hidden) {
     box.dataset.key = key;
+    hideIpHover();
     box.replaceChildren(buildCountryDetail(focusItem.cc, focusItem.de || focusItem.name));
   }
   showInspect();
@@ -2419,6 +3040,7 @@ function paintDetail(force = false) {
     return;
   }
   box.dataset.key = key;
+  hideIpHover();
   showInspect();
   box.replaceChildren();
   if (row.cc) box.append(buildCountryDetail(row.cc, row.name));
@@ -2620,9 +3242,11 @@ function buildControls() {
     if (value === state.windowSec) btn.classList.add("active");
     btn.addEventListener("click", () => {
       state.windowSec = value;
+      state.waveZoom = 1;
       resetFlights();
       for (const child of windows.children) child.classList.remove("active");
       btn.classList.add("active");
+      waveKey = "";
       feed.dataset.key = "";
       savePrefs();
     });
@@ -2645,12 +3269,13 @@ function buildControls() {
 }
 
 document.getElementById("liveBtn").addEventListener("click", () => {
+  if (state.follow) return;
+  state.waveZoom = 1;
   state.follow = true;
   state.playing = false;
+  const full = timeRange();
+  startWaveFlight(Math.min(full.span, LIVE_SPAN), true);
   state.cursor = Math.max(latestTs(), Date.now() / 1000);
-  state.waveZoom = 1;
-  state.waveOrigin = null;
-  waveKey = "";
   resetFlights();
   syncLive();
   syncPlay();
@@ -2659,6 +3284,10 @@ document.getElementById("liveBtn").addEventListener("click", () => {
 
 document.getElementById("playBtn").addEventListener("click", () => {
   const wasLive = state.follow;
+  if (wasLive) {
+    const full = timeRange();
+    startWaveFlight(Math.max(8, full.span), false);
+  }
   state.follow = false;
   if (wasLive) state.playing = true;
   else state.playing = !state.playing;
@@ -2668,11 +3297,7 @@ document.getElementById("playBtn").addEventListener("click", () => {
     state.born.clear();
     restarted = true;
   }
-  if (wasLive || restarted) {
-    resetFlights();
-    state.waveOrigin = null;
-    waveKey = "";
-  }
+  if (wasLive || restarted) resetFlights();
   syncLive();
   syncPlay();
 });
@@ -2682,29 +3307,43 @@ let waveDragDist = 0;
 let waveDownX = 0;
 let waveWasPlaying = false;
 wave.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0) return;
   draggingWave = true;
   waveDragDist = 0;
   waveDownX = event.clientX;
   waveWasPlaying = state.playing && !state.follow;
-  seekWave(event.clientX, { pause: true });
+  if (!state.follow) seekWave(event.clientX, { pause: true });
   try { wave.setPointerCapture(event.pointerId); } catch (err) { /* synthetic events */ }
 });
 wave.addEventListener("pointermove", (event) => {
   if (!draggingWave) return;
   waveDragDist += Math.abs(event.clientX - waveDownX);
   waveDownX = event.clientX;
+  if (state.follow && waveDragDist < 6) return;
   seekWave(event.clientX, { pause: true });
 });
 wave.addEventListener("pointerup", (event) => {
   if (!draggingWave) return;
   draggingWave = false;
-  // Kurzer Klick: an der Stelle fortsetzen oder stoppen.
   if (waveDragDist < 6) {
-    seekWave(event.clientX, { pause: true, play: !waveWasPlaying });
+    if (!state.follow) seekWave(event.clientX, { pause: true, play: !waveWasPlaying });
   }
 });
 wave.addEventListener("pointercancel", () => {
   draggingWave = false;
+});
+wave.addEventListener("contextmenu", (event) => {
+  event.preventDefault();
+  const hit = binAtClientX(event.clientX);
+  if (!hit) return;
+  openStarMenu(event.clientX, event.clientY, hit.ts);
+});
+wave.parentElement?.addEventListener("pointermove", (event) => {
+  const hit = binAtClientX(event.clientX);
+  waveHover = hit ? hit.index : -1;
+});
+wave.parentElement?.addEventListener("pointerleave", () => {
+  waveHover = -1;
 });
 wave.addEventListener("wheel", (event) => {
   event.preventDefault();
@@ -2718,17 +3357,17 @@ wave.addEventListener("wheel", (event) => {
   // Nach oben = reinzoomen, nach unten = rauszoomen (wie auf der Karte).
   const factor = Math.exp(-event.deltaY * 0.0018);
   if (state.follow) {
-    state.waveZoom *= factor;
-    waveView();
-    waveKey = "";
+    event.preventDefault();
     return;
   }
   const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
   const view = waveView();
   const anchor = view.start + view.span * ratio;
   state.waveZoom *= factor;
-  const next = waveView();
-  state.waveOrigin = anchor - next.span * ratio;
+  waveFlight = null;
+  const nextSpan = targetWaveSpan(timeRange());
+  waveSpanShown = nextSpan;
+  state.waveOrigin = anchor - nextSpan * ratio;
   waveView();
   waveKey = "";
 }, { passive: false });
@@ -2809,7 +3448,7 @@ function countryStats(cc) {
   const roles = {};
   const ipCounts = {};
   const pathCounts = {};
-  const orgCounts = {};
+  const orgCounts = new Map();
   let session = 0;
   let hour = 0;
   let all = 0;
@@ -2844,8 +3483,11 @@ function countryStats(cc) {
       roles[role] = (roles[role] || 0) + 1;
       if (role === "burst" || role === "botnet") burst += row.burstCount || 1;
       if (row.org_name || row.org) {
-        const org = row.org_name || row.org;
-        orgCounts[org] = (orgCounts[org] || 0) + 1;
+        const name = row.org_name || row.org;
+        const cur = orgCounts.get(name) || { name, key: row.org || "", count: 0 };
+        cur.count += 1;
+        if (row.org) cur.key = row.org;
+        orgCounts.set(name, cur);
       }
     }
   };
@@ -2861,7 +3503,7 @@ function countryStats(cc) {
     roles,
     topIps: top(ipCounts),
     topPaths: top(pathCounts),
-    topOrgs: top(orgCounts, 3),
+    topOrgs: [...orgCounts.values()].sort((a, b) => b.count - a.count).slice(0, 3),
     bytes,
     burst,
     first,
@@ -2886,31 +3528,41 @@ function fillMetaList(node, rows) {
   }
 }
 
+function orgIcon(key) {
+  const slug = String(key || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return slug ? `/marks/${slug}.svg` : "";
+}
+
 function fillTopList(node, sections) {
   node.replaceChildren();
-  for (const [heading, rows, mono] of sections) {
+  for (const [heading, rows, mode] of sections) {
     if (!rows.length) continue;
     const head = document.createElement("li");
     head.className = "top-head";
     head.textContent = heading;
     node.appendChild(head);
-    for (const [label, count] of rows) {
+    for (const row of rows) {
+      const label = Array.isArray(row) ? row[0] : row.name;
+      const count = Array.isArray(row) ? row[1] : row.count;
       const li = document.createElement("li");
       const name = document.createElement("span");
-      if (mono) name.className = "mono";
-      name.textContent = label;
+      name.className = mode === "ip" || mode === "path" ? "mono top-label" : "top-label";
+      if (mode === "org") {
+        const src = orgIcon(row.key || label);
+        if (src) {
+          const img = document.createElement("img");
+          img.className = "org-mark";
+          img.alt = "";
+          img.src = src;
+          img.addEventListener("error", () => img.remove());
+          name.appendChild(img);
+        }
+      }
+      name.append(document.createTextNode(label));
       const value = document.createElement("span");
       value.textContent = count.toLocaleString("de-DE");
       li.append(name, value);
-      if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(label)) {
-        li.classList.add("ip-row");
-        li.title = "Rechtsklick blockt diese IP";
-        li.addEventListener("contextmenu", (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          openContextMenu(event.clientX, event.clientY, rowForIp(label));
-        });
-      }
+      if (mode === "ip") bindIpLine(li, label);
       node.appendChild(li);
     }
   }
@@ -2958,9 +3610,9 @@ function buildCountryDetail(cc, name) {
   const tops = document.createElement("ul");
   tops.className = "dossier-tops";
   fillTopList(tops, [
-    ["Häufigste Adressen", stats.topIps, true],
-    ["Häufigste Pfade", stats.topPaths, true],
-    ["Netze", stats.topOrgs, false],
+    ["Häufigste Adressen", stats.topIps, "ip"],
+    ["Häufigste Pfade", stats.topPaths, "path"],
+    ["Netze", stats.topOrgs, "org"],
   ]);
   wrap.append(head, figures, meta, kinds, tops);
   return wrap;
@@ -3044,8 +3696,9 @@ function paintCountry() {
     }
   }
   fillTopList(tops, [
-    ["Top-Adressen", stats.topIps.slice(0, 3), true],
-    ["Top-Pfade", stats.topPaths.slice(0, 3), true],
+    ["Top-Adressen", stats.topIps.slice(0, 3), "ip"],
+    ["Top-Pfade", stats.topPaths.slice(0, 3), "path"],
+    ["Netze", stats.topOrgs.slice(0, 3), "org"],
   ]);
   syncMapsBtn();
 }
@@ -3236,6 +3889,7 @@ addEventListener("keydown", (event) => {
 
 addEventListener("resize", resize);
 loadPrefs();
+loadStars();
 applyTheme(localStorage.getItem("livemap.theme"));
 document.querySelectorAll("[data-theme-pick]").forEach((button) => {
   button.addEventListener("click", () => applyTheme(button.dataset.themePick));
@@ -3271,6 +3925,46 @@ function copyText(text) {
   showToast("Kopiert", text, "ok");
 }
 
+async function runRowAction(id, row) {
+  if (!row) return;
+  try {
+    if (id === "details") {
+      state.picked = row;
+      feed.dataset.key = "";
+      await loadIpLookup(row.ip);
+    } else if (id === "copy-ip") copyText(row.ip);
+    else if (id === "copy-path") copyText(row.path || "");
+    else if (id === "copy-line") copyText(`${formatTime(row.ts)} ${row.ip} ${row.method || ""} ${row.path || ""} ${row.status || ""}`.trim());
+    else if (id === "focus" && row.cc) focusCountryByCode(row.cc, { soft: false });
+    else if (id === "maps") openGoogleMaps(row.lat, row.lon, row.name || row.cc || row.ip || "");
+    else if (id === "ext-abuse") open(`https://www.abuseipdb.com/check/${encodeURIComponent(row.ip)}`, "_blank", "noopener");
+    else if (id === "ext-vt") open(`https://www.virustotal.com/gui/ip-address/${encodeURIComponent(row.ip)}`, "_blank", "noopener");
+    else if (id === "ext-info") open(`https://ipinfo.io/${encodeURIComponent(row.ip)}`, "_blank", "noopener");
+    else if (id === "ext-bgp") open(`https://bgp.he.net/ip/${encodeURIComponent(row.ip)}`, "_blank", "noopener");
+    else if (id === "block") {
+      const done = [];
+      let lastErr = null;
+      for (const jail of state.jails) {
+        try {
+          await runIpAction("ban", row.ip, jail);
+          done.push(jail);
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+      if (!done.length) throw lastErr || new Error("Blocken fehlgeschlagen");
+      showToast("IP blockiert", `${row.ip} · ${done.join(", ")}`, "hot");
+    } else if (id === "unban") {
+      for (const jail of state.jails) {
+        try { await runIpAction("unban", row.ip, jail); } catch (err) { /* jail may not contain ip */ }
+      }
+      showToast("Entsperrt", row.ip, "ok");
+    }
+  } catch (err) {
+    alert(err.message || "Aktion fehlgeschlagen");
+  }
+}
+
 function closeContextMenu() {
   const menu = document.getElementById("ctx");
   if (!menu) return;
@@ -3304,7 +3998,13 @@ let domainKey = "";
 function paintBanButton() {
   const btn = document.getElementById("banToggle");
   if (!btn) return;
-  btn.textContent = state.bans.size ? `Gebannt ${state.bans.size.toLocaleString("de-DE")}` : "Gebannt";
+  btn.replaceChildren(document.createTextNode("Gebannt"));
+  if (state.bans.size) {
+    const count = document.createElement("span");
+    count.className = "ban-count";
+    count.textContent = `(${state.bans.size.toLocaleString("de-DE")})`;
+    btn.append(count);
+  }
   btn.classList.toggle("active", state.onlyBanned);
 }
 
@@ -3313,7 +4013,9 @@ function paintDomains() {
   if (!host) return;
   const counts = new Map();
   let bare = 0;
+  const from = state.follow ? -Infinity : dataStartTs();
   for (const row of state.hits) {
+    if (row.ts < from || row.ts > state.cursor) continue;
     const name = rowDomain(row);
     if (!name) {
       bare += 1;
@@ -3332,15 +4034,24 @@ function paintDomains() {
     }
     names = keep;
   }
-  const key = `${state.domain}|${bare}|${names.map(([name, count]) => `${name}:${count}`).join("|")}`;
+  const key = `${state.follow ? 1 : 0}|${state.domain}|${bare}|${names.map(([name, count]) => `${name}:${count}`).join("|")}`;
   if (key === domainKey) return;
   domainKey = key;
   host.replaceChildren();
-  const add = (id, label, active) => {
+  const add = (id, label, count, active) => {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.textContent = label;
-    btn.title = label;
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = label;
+    btn.append(name);
+    if (count) {
+      const num = document.createElement("span");
+      num.className = "count";
+      num.textContent = `(${count.toLocaleString("de-DE")})`;
+      btn.append(num);
+    }
+    btn.title = count ? `${label} (${count.toLocaleString("de-DE")})` : label;
     btn.classList.toggle("active", active);
     btn.addEventListener("click", () => {
       state.domain = id;
@@ -3353,9 +4064,150 @@ function paintDomains() {
     });
     host.appendChild(btn);
   };
-  add("", "Alle Domains", !state.domain);
-  for (const [name, count] of names) add(name, count ? `${name} ${count.toLocaleString("de-DE")}` : name, state.domain === name);
-  if (bare) add("-", `ohne Host ${bare.toLocaleString("de-DE")}`, state.domain === "-");
+  add("", "Alle Domains", 0, !state.domain);
+  for (const [name, count] of names) add(name, name, count, state.domain === name);
+  if (bare) add("-", "ohne Host", bare, state.domain === "-");
+}
+
+const IP_LINE = /^(?:\d{1,3}\.){3}\d{1,3}$/;
+let ipHoverShow = 0;
+let ipHoverHide = 0;
+let ctxOpenedAt = 0;
+
+function bindIpLine(node, ip) {
+  if (!node || !IP_LINE.test(ip || "")) return;
+  node.classList.add("ip-row");
+  node.title = "Zeigen für Infos, Rechtsklick für Aktionen";
+  node.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    hideIpHover();
+    openContextMenu(event.clientX, event.clientY, rowForIp(ip));
+  });
+  node.addEventListener("pointerenter", () => scheduleIpHover(node, ip));
+  node.addEventListener("pointerleave", () => scheduleHideIpHover());
+}
+
+function scheduleIpHover(anchor, ip) {
+  clearTimeout(ipHoverHide);
+  clearTimeout(ipHoverShow);
+  ipHoverShow = setTimeout(() => showIpHover(anchor, ip), 240);
+}
+
+function scheduleHideIpHover() {
+  clearTimeout(ipHoverShow);
+  ipHoverHide = setTimeout(hideIpHover, 220);
+}
+
+function hideIpHover() {
+  clearTimeout(ipHoverShow);
+  clearTimeout(ipHoverHide);
+  const card = document.getElementById("ipHover");
+  if (card) card.hidden = true;
+}
+
+function ipFacts(ip) {
+  const row = rowForIp(ip);
+  let count = 0;
+  let first = null;
+  let last = null;
+  const take = (item) => {
+    if (!item || item.ip !== ip) return;
+    count += 1;
+    if (first == null || item.ts < first) first = item.ts;
+    if (last == null || item.ts > last) last = item.ts;
+  };
+  for (const item of state.hits) take(item);
+  if (!count) for (const item of state.events) take(item);
+  return { row, count, first, last };
+}
+
+function showIpHover(anchor, ip) {
+  if (!anchor || !anchor.isConnected) return;
+  const menu = document.getElementById("ctx");
+  if (menu && !menu.hidden) return;
+  let card = document.getElementById("ipHover");
+  if (!card) {
+    card = document.createElement("div");
+    card.id = "ipHover";
+    card.className = "ip-hover";
+    card.hidden = true;
+    document.body.appendChild(card);
+    card.addEventListener("pointerenter", () => clearTimeout(ipHoverHide));
+    card.addEventListener("pointerleave", () => scheduleHideIpHover());
+  }
+  const { row, count, first, last } = ipFacts(ip);
+  card.replaceChildren();
+  const head = document.createElement("strong");
+  head.className = "ip-hover-ip";
+  head.textContent = ip;
+  card.appendChild(head);
+  const place = document.createElement("p");
+  const flag = flagSrc(row.cc);
+  if (flag) {
+    const img = document.createElement("img");
+    img.className = "tip-flag";
+    img.alt = "";
+    img.src = flag;
+    place.appendChild(img);
+  }
+  place.append(document.createTextNode(row.name || row.cc || "Unbekannt"));
+  card.appendChild(place);
+  const orgName = row.org_name || row.org || "";
+  if (orgName) {
+    const org = document.createElement("p");
+    const src = orgIcon(row.org || orgName);
+    if (src) {
+      const img = document.createElement("img");
+      img.className = "org-mark";
+      img.alt = "";
+      img.src = src;
+      img.addEventListener("error", () => img.remove());
+      org.appendChild(img);
+    }
+    org.append(document.createTextNode(orgName));
+    card.appendChild(org);
+  }
+  const meta = document.createElement("p");
+  const bits = [];
+  if (count) bits.push(`${count.toLocaleString("de-DE")} Treffer`);
+  if (first) bits.push(formatTime(first));
+  if (last && last !== first) bits.push(formatTime(last));
+  meta.textContent = bits.join(" · ");
+  if (bits.length) card.appendChild(meta);
+  const actions = document.createElement("div");
+  actions.className = "ip-hover-actions";
+  const buttons = [
+    ["details", "Details"],
+    ["copy-ip", "Kopieren"],
+    ["ext-abuse", "AbuseIPDB"],
+    ["ext-info", "IPinfo"],
+  ];
+  if (state.actions) buttons.unshift(["block", "Blocken"]);
+  for (const [id, label] of buttons) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = label;
+    if (id === "block") btn.className = "ctx-block";
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      hideIpHover();
+      runRowAction(id, row);
+    });
+    actions.appendChild(btn);
+  }
+  card.appendChild(actions);
+  card.hidden = false;
+  const rect = anchor.getBoundingClientRect();
+  const width = card.offsetWidth || 240;
+  const height = card.offsetHeight || 140;
+  let left = rect.left - width - 10;
+  if (left < 8) left = Math.min(rect.right + 10, window.innerWidth - width - 8);
+  let top = rect.top;
+  if (top + height > window.innerHeight - 8) top = Math.max(8, window.innerHeight - height - 8);
+  card.style.left = `${Math.max(8, left)}px`;
+  card.style.top = `${top}px`;
 }
 
 function rowForIp(ip) {
@@ -3394,47 +4246,13 @@ function openContextMenu(x, y, row) {
     btn.type = "button";
     btn.textContent = label;
     if (id === "block") btn.className = "ctx-block";
-    btn.addEventListener("click", async () => {
+    btn.addEventListener("click", () => {
       closeContextMenu();
-      try {
-        if (id === "details") {
-          state.picked = row;
-          feed.dataset.key = "";
-          await loadIpLookup(row.ip);
-        } else if (id === "copy-ip") copyText(row.ip);
-        else if (id === "copy-path") copyText(row.path || "");
-        else if (id === "copy-line") copyText(`${formatTime(row.ts)} ${row.ip} ${row.method || ""} ${row.path || ""} ${row.status || ""}`.trim());
-        else if (id === "focus" && row.cc) focusCountryByCode(row.cc, { soft: false });
-        else if (id === "maps") openGoogleMaps(row.lat, row.lon, row.name || row.cc || row.ip || "");
-        else if (id === "ext-abuse") open(`https://www.abuseipdb.com/check/${encodeURIComponent(row.ip)}`, "_blank", "noopener");
-        else if (id === "ext-vt") open(`https://www.virustotal.com/gui/ip-address/${encodeURIComponent(row.ip)}`, "_blank", "noopener");
-        else if (id === "ext-info") open(`https://ipinfo.io/${encodeURIComponent(row.ip)}`, "_blank", "noopener");
-        else if (id === "ext-bgp") open(`https://bgp.he.net/ip/${encodeURIComponent(row.ip)}`, "_blank", "noopener");
-        else if (id === "block") {
-          const done = [];
-          let lastErr = null;
-          for (const jail of state.jails) {
-            try {
-              await runIpAction("ban", row.ip, jail);
-              done.push(jail);
-            } catch (err) {
-              lastErr = err;
-            }
-          }
-          if (!done.length) throw lastErr || new Error("Blocken fehlgeschlagen");
-          showToast("IP blockiert", `${row.ip} · ${done.join(", ")}`, "hot");
-        } else if (id === "unban") {
-          for (const jail of state.jails) {
-            try { await runIpAction("unban", row.ip, jail); } catch (err) { /* jail may not contain ip */ }
-          }
-          showToast("Entsperrt", row.ip, "ok");
-        }
-      } catch (err) {
-        alert(err.message || "Aktion fehlgeschlagen");
-      }
+      runRowAction(id, row);
     });
     menu.appendChild(btn);
   }
+  ctxOpenedAt = Date.now();
   menu.hidden = false;
   const pad = 8;
   const width = menu.offsetWidth || 220;
@@ -3443,10 +4261,16 @@ function openContextMenu(x, y, row) {
   menu.style.top = `${Math.min(y, window.innerHeight - height - pad)}px`;
 }
 
-document.addEventListener("click", closeContextMenu);
+document.addEventListener("click", (event) => {
+  if (Date.now() - ctxOpenedAt < 350) return;
+  const target = event.target;
+  if (target && target.closest && target.closest("#ctx, #ipHover")) return;
+  closeContextMenu();
+});
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     closeContextMenu();
+    hideIpHover();
     if (focusItem) closeCountry();
     return;
   }
@@ -3477,6 +4301,8 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.getElementById("exportBtn")?.addEventListener("click", exportWindowCsv);
+paintHeaderClock();
+setInterval(paintHeaderClock, 1000);
 
 document.getElementById("inspectCollapse")?.addEventListener("click", () => {
   const inspect = document.getElementById("inspect");
@@ -3592,17 +4418,202 @@ function formatDuration(sec) {
   return `${total} Sek`;
 }
 
+function isAdminUser() {
+  return !!(state.user && state.user.role === "admin");
+}
+
+function syncAdminTab() {
+  const adminTab = document.querySelector('.settings-nav button[data-tab="administration"]');
+  if (adminTab) adminTab.hidden = !isAdminUser();
+  if (!isAdminUser()) {
+    const panel = document.querySelector('.settings-panel[data-panel="administration"]');
+    if (panel) panel.hidden = true;
+    const active = document.querySelector(".settings-nav button.active");
+    if (active && active.dataset.tab === "administration") setSettingsTab("account");
+  }
+}
+
 function setSettingsTab(id) {
+  if (id === "administration" && !isAdminUser()) id = "account";
   document.querySelectorAll(".settings-nav button").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.tab === id);
   });
   document.querySelectorAll(".settings-panel").forEach((panel) => {
     panel.hidden = panel.dataset.panel !== id;
   });
+  if (id === "administration") loadAdmin();
 }
 
-function showSettings() {
-  const panel = document.getElementById("settings");
+function roleLabel(role) {
+  return role === "admin" ? "Administration" : "Zuschauen";
+}
+
+async function loadAdmin() {
+  const users = document.getElementById("userList");
+  const invites = document.getElementById("inviteList");
+  if (!users || !invites) return;
+  const res = await fetch("/api/users", { credentials: "same-origin" });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    users.innerHTML = "";
+    invites.innerHTML = "";
+    return;
+  }
+  users.replaceChildren();
+  for (const user of data.users || []) {
+    const li = document.createElement("li");
+    const name = document.createElement("span");
+    name.textContent = user.username;
+    const role = document.createElement("span");
+    role.className = "role";
+    role.textContent = roleLabel(user.role);
+    li.append(name, role);
+    users.appendChild(li);
+  }
+  invites.replaceChildren();
+  for (const item of data.invites || []) {
+    const li = document.createElement("li");
+    const name = document.createElement("span");
+    name.textContent = item.username;
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.textContent = "Zurückziehen";
+    drop.addEventListener("click", async () => {
+      await fetch("/api/users/revoke", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: item.username }),
+      });
+      loadAdmin();
+    });
+    li.append(name, drop);
+    invites.appendChild(li);
+  }
+  if (!invites.children.length) {
+    const li = document.createElement("li");
+    li.textContent = "Keine offenen Einladungen";
+    invites.appendChild(li);
+  }
+}
+
+document.getElementById("setupReset")?.addEventListener("click", () => {
+  const confirmBox = document.getElementById("setupResetConfirm");
+  const msg = document.getElementById("setupResetMsg");
+  if (msg) msg.textContent = "";
+  if (confirmBox) confirmBox.hidden = false;
+});
+
+document.getElementById("setupResetNo")?.addEventListener("click", () => {
+  const confirmBox = document.getElementById("setupResetConfirm");
+  if (confirmBox) confirmBox.hidden = true;
+});
+
+document.getElementById("setupResetYes")?.addEventListener("click", async () => {
+  const yes = document.getElementById("setupResetYes");
+  const msg = document.getElementById("setupResetMsg");
+  const box = document.getElementById("setupResetCode");
+  if (msg) {
+    msg.textContent = "";
+    msg.className = "settings-msg";
+  }
+  if (yes) yes.disabled = true;
+  try {
+    const res = await fetch("/api/setup/reset", {
+      method: "POST",
+      credentials: "same-origin",
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok || !data.code) {
+      if (msg) {
+        msg.textContent = data.error || "Zurücksetzen fehlgeschlagen";
+        msg.className = "settings-msg is-bad";
+      }
+      if (yes) yes.disabled = false;
+      return;
+    }
+    const reset = document.getElementById("setupReset");
+    const confirmBox = document.getElementById("setupResetConfirm");
+    if (reset) reset.hidden = true;
+    if (confirmBox) confirmBox.hidden = true;
+    if (box) {
+      box.hidden = false;
+      box.replaceChildren();
+      const lead = document.createElement("span");
+      lead.textContent = "Alle Konten sind gelöscht. Dieser Einrichtungscode gilt nur jetzt hier. Danach liegt er auf dem Server.";
+      const code = document.createElement("code");
+      code.textContent = data.code;
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.textContent = "Code kopieren";
+      copy.addEventListener("click", () => copyText(data.code));
+      const open = document.createElement("a");
+      open.className = "setup-go";
+      open.href = "/setup";
+      open.textContent = "Einrichtung öffnen";
+      box.append(lead, code, copy, open);
+    }
+  } catch (err) {
+    if (msg) {
+      msg.textContent = "Netzwerkfehler";
+      msg.className = "settings-msg is-bad";
+    }
+    if (yes) yes.disabled = false;
+  }
+});
+
+document.getElementById("inviteForm")?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const msg = document.getElementById("inviteMsg");
+  const box = document.getElementById("inviteLink");
+  const save = document.getElementById("inviteSave");
+  const username = document.getElementById("inviteUser")?.value.trim() || "";
+  if (msg) {
+    msg.textContent = "";
+    msg.className = "settings-msg";
+  }
+  if (save) save.disabled = true;
+  try {
+    const res = await fetch("/api/users", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      if (msg) {
+        msg.textContent = data.error || "Einladung fehlgeschlagen";
+        msg.className = "settings-msg is-bad";
+      }
+      return;
+    }
+    if (box) {
+      box.hidden = false;
+      box.replaceChildren();
+      const lead = document.createElement("span");
+      lead.textContent = "Link nur jetzt sichtbar. Danach liegt nur noch der Schlüssel auf dem Server.";
+      const code = document.createElement("code");
+      code.textContent = data.url;
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.textContent = "Link kopieren";
+      copy.addEventListener("click", () => copyText(data.url));
+      box.append(lead, code, copy);
+    }
+    if (msg) {
+      msg.textContent = "Einladung erstellt";
+      msg.className = "settings-msg is-ok";
+    }
+    const field = document.getElementById("inviteUser");
+    if (field) field.value = "";
+    loadAdmin();
+  } finally {
+    if (save) save.disabled = false;
+  }
+});
+
+function openSheet(panel) {
   if (!panel) return;
   if (window.matchMedia("(max-width: 720px)").matches && document.body.classList.contains("panel-log")) {
     setMobilePanel("map");
@@ -3612,12 +4623,9 @@ function showSettings() {
   panel.classList.remove("is-open");
   void panel.offsetWidth;
   panel.classList.add("is-open");
-  setSettingsTab("account");
-  loadSettingsStatus();
 }
 
-function hideSettings() {
-  const panel = document.getElementById("settings");
+function closeSheet(panel) {
   if (!panel || panel.hidden || panel.dataset.closing === "1") return;
   panel.dataset.closing = "1";
   panel.classList.remove("is-open");
@@ -3633,6 +4641,255 @@ function hideSettings() {
   };
   panel.addEventListener("transitionend", onEnd);
   setTimeout(finish, 340);
+}
+
+let analyticsKey = "";
+let analyticsDrawn = 0;
+let analyticsSpan = 12 * 3600;
+let analyticsCc = "";
+let analyticsKind = "";
+let analyticsFilterKey = "";
+const analyticsCharts = new WeakMap();
+const ANALYTICS_SPANS = [
+  [3600, "1 Std"],
+  [12 * 3600, "12 Std"],
+  [24 * 3600, "24 Std"],
+  [7 * 86400, "7 Tage"],
+  [0, "Alles"],
+];
+
+function analyticsOrigin() {
+  let first = Date.now() / 1000;
+  for (const row of state.hits) if (row.ts && row.ts < first) first = row.ts;
+  for (const row of state.events) if (row.ts && row.ts < first) first = row.ts;
+  return first;
+}
+
+function analyticsKindOf(row) {
+  if (!row) return "page";
+  if (analyticsKind === "self") return viewKind(row);
+  return row.kind || "page";
+}
+
+function analyticsMatch(row, start, end) {
+  if (!row || row.ts < start || row.ts > end) return false;
+  if (analyticsCc && row.cc !== analyticsCc) return false;
+  if (analyticsKind && analyticsKindOf(row) !== analyticsKind) return false;
+  return true;
+}
+
+function countBins(rows, start, end, n, field) {
+  const bins = field ? Array.from({ length: n }, () => new Set()) : new Array(n).fill(0);
+  const span = Math.max(1, end - start);
+  for (const row of rows) {
+    if (row.ts < start || row.ts >= end) continue;
+    const index = Math.min(n - 1, Math.floor(((row.ts - start) / span) * n));
+    if (field) {
+      const value = row[field];
+      if (value) bins[index].add(value);
+    } else bins[index] += 1;
+  }
+  return field ? bins.map((set) => set.size) : bins;
+}
+
+function paintChart(canvas, values) {
+  if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  const dpr = Math.min(2, devicePixelRatio || 1);
+  const width = Math.max(1, Math.floor(rect.width * dpr));
+  const height = Math.max(1, Math.floor(rect.height * dpr));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  const g = canvas.getContext("2d");
+  g.clearRect(0, 0, width, height);
+  const light = document.documentElement.dataset.theme === "light";
+  const stroke = light ? "#4d6274" : "#9aabba";
+  const fill = light ? "rgba(77, 98, 116, 0.16)" : "rgba(154, 171, 186, 0.28)";
+  const max = Math.max(1, ...values);
+  const step = values.length > 1 ? width / (values.length - 1) : width;
+  const pad = Math.max(2, dpr * 2);
+  g.beginPath();
+  values.forEach((value, i) => {
+    const x = values.length > 1 ? i * step : width / 2;
+    const y = height - pad - (value / max) * (height - pad * 2);
+    if (i === 0) g.moveTo(x, y);
+    else g.lineTo(x, y);
+  });
+  g.strokeStyle = stroke;
+  g.lineWidth = Math.max(1, dpr);
+  g.stroke();
+  g.lineTo(width, height);
+  g.lineTo(0, height);
+  g.closePath();
+  g.fillStyle = fill;
+  g.fill();
+}
+
+function drawAreaChart(canvas, values) {
+  if (!canvas) return;
+  const prev = analyticsCharts.get(canvas);
+  const from = prev && prev.values.length === values.length ? prev.values : null;
+  const token = (prev?.token || 0) + 1;
+  analyticsCharts.set(canvas, { values: values.slice(), token });
+  const same = from && from.every((value, i) => value === values[i]);
+  if (!from || same) {
+    paintChart(canvas, values);
+    return;
+  }
+  const start = performance.now();
+  const frame = (now) => {
+    const current = analyticsCharts.get(canvas);
+    if (!current || current.token !== token) return;
+    const t = Math.min(1, (now - start) / 460);
+    const ease = t * t * (3 - 2 * t);
+    paintChart(canvas, values.map((value, i) => from[i] + (value - from[i]) * ease));
+    if (t < 1) requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+}
+
+function analyticsChip(label, active, onClick) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = active ? "active" : "";
+  btn.textContent = label;
+  btn.addEventListener("click", onClick);
+  return btn;
+}
+
+function paintAnalyticsControls(start, end) {
+  const countries = new Map();
+  for (const row of state.hits) {
+    if (!row || row.ts < start || row.ts > end || !row.cc) continue;
+    if (analyticsKind && analyticsKindOf(row) !== analyticsKind) continue;
+    countries.set(row.cc, (countries.get(row.cc) || 0) + 1);
+  }
+  const tops = [...countries.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  if (analyticsCc && !countries.has(analyticsCc)) analyticsCc = "";
+  const key = [
+    analyticsSpan,
+    analyticsCc,
+    analyticsKind,
+    tops.map(([cc, n]) => `${cc}:${n}`).join(","),
+  ].join("|");
+  if (key === analyticsFilterKey) return;
+  analyticsFilterKey = key;
+  const spans = document.getElementById("anSpans");
+  const countryHost = document.getElementById("anCountriesPick");
+  const services = document.getElementById("anServices");
+  if (!spans || !countryHost || !services) return;
+  const choose = (apply) => () => {
+    apply();
+    analyticsFilterKey = "";
+    analyticsDrawn = 0;
+    paintAnalytics();
+  };
+  spans.replaceChildren();
+  for (const [value, label] of ANALYTICS_SPANS) {
+    spans.append(analyticsChip(label, analyticsSpan === value, choose(() => { analyticsSpan = value; })));
+  }
+  countryHost.replaceChildren();
+  countryHost.append(analyticsChip("Alle Länder", !analyticsCc, choose(() => { analyticsCc = ""; })));
+  for (const [cc] of tops) {
+    const btn = analyticsChip(cc, analyticsCc === cc, choose(() => { analyticsCc = cc; }));
+    const src = flagSrc(cc);
+    if (src) {
+      const img = document.createElement("img");
+      img.src = src;
+      img.alt = "";
+      btn.prepend(img);
+    }
+    countryHost.append(btn);
+  }
+  services.replaceChildren();
+  services.append(analyticsChip("Alle Dienste", !analyticsKind, choose(() => { analyticsKind = ""; })));
+  for (const [id, label] of KINDS) {
+    services.append(analyticsChip(label, analyticsKind === id, choose(() => { analyticsKind = id; })));
+  }
+}
+
+function paintAnalytics() {
+  const panel = document.getElementById("analytics");
+  if (!panel || panel.hidden) return;
+  const now = Date.now() / 1000;
+  const start = analyticsSpan > 0 ? now - analyticsSpan : analyticsOrigin();
+  paintAnalyticsControls(start, now);
+  const probe = document.getElementById("anHitsChart");
+  if (!probe || probe.getBoundingClientRect().width < 2) return;
+  const nowMs = performance.now();
+  if (analyticsDrawn && nowMs - analyticsDrawn < 900) return;
+  analyticsDrawn = nowMs;
+  const hits = state.hits.filter((row) => analyticsMatch(row, start, now));
+  const bans = state.events.filter((row) => BAN_KINDS.has(row.kind) && analyticsMatch(row, start, now));
+  const ips = new Set();
+  const countries = new Set();
+  const banIps = new Set();
+  const kinds = new Map();
+  for (const row of hits) {
+    if (row.ip) ips.add(row.ip);
+    if (row.cc) countries.add(row.cc);
+    const kind = row.kind || "page";
+    kinds.set(kind, (kinds.get(kind) || 0) + 1);
+  }
+  for (const row of bans) if (row.ip) banIps.add(row.ip);
+  const numbers = [
+    ["anHits", hits.length],
+    ["anBanned", banIps.size],
+    ["anIps", ips.size],
+    ["anCountries", countries.size],
+  ];
+  for (const [id, value] of numbers) {
+    const node = document.getElementById(id);
+    if (node) node.textContent = value.toLocaleString("de-DE");
+  }
+  drawAreaChart(document.getElementById("anHitsChart"), countBins(hits, start, now, 28));
+  drawAreaChart(document.getElementById("anBannedChart"), countBins(bans, start, now, 28));
+  drawAreaChart(document.getElementById("anIpsChart"), countBins(hits, start, now, 28, "ip"));
+  drawAreaChart(document.getElementById("anCountriesChart"), countBins(hits, start, now, 28, "cc"));
+  const tableKey = `${hits.length}|${banIps.size}|${ips.size}|${countries.size}|${analyticsSpan}|${analyticsCc}|${analyticsKind}`;
+  if (tableKey === analyticsKey) return;
+  analyticsKey = tableKey;
+  const table = document.getElementById("anKinds");
+  if (!table) return;
+  table.replaceChildren();
+  const rows = [...kinds.entries()].sort((a, b) => b[1] - a[1]);
+  for (const [kind, count] of rows) {
+    const tr = document.createElement("tr");
+    const name = document.createElement("td");
+    name.textContent = (KIND[kind] || KIND.page).label;
+    const value = document.createElement("td");
+    value.textContent = count.toLocaleString("de-DE");
+    tr.append(name, value);
+    table.append(tr);
+  }
+}
+
+function showAnalytics() {
+  closeSheet(document.getElementById("settings"));
+  const panel = document.getElementById("analytics");
+  openSheet(panel);
+  analyticsDrawn = 0;
+  analyticsKey = "";
+  paintAnalytics();
+}
+
+function hideAnalytics() {
+  closeSheet(document.getElementById("analytics"));
+}
+
+function showSettings() {
+  closeSheet(document.getElementById("analytics"));
+  const panel = document.getElementById("settings");
+  if (!panel) return;
+  openSheet(panel);
+  setSettingsTab("account");
+  loadSettingsStatus();
+}
+
+function hideSettings() {
+  closeSheet(document.getElementById("settings"));
 }
 
 function statGrid(items) {
@@ -3652,7 +4909,6 @@ function statGrid(items) {
 
 function paintSettingsStatus(data) {
   const fail = document.getElementById("settingsFail2ban");
-  const traffic = document.getElementById("settingsTraffic");
   const services = document.getElementById("settingsServices");
   const general = document.getElementById("settingsGeneral");
   if (fail) {
@@ -3681,27 +4937,6 @@ function paintSettingsStatus(data) {
       table.append(tr);
     }
     fail.append(table);
-  }
-  if (traffic) {
-    const t = data.traffic;
-    traffic.replaceChildren(statGrid([
-      [String(t.hits), "Zugriffe"],
-      [String(t.hour), "letzte Stunde"],
-      [String(t.ips), "Adressen"],
-      [String(t.countries), "Länder"],
-    ]));
-    const table = document.createElement("table");
-    table.className = "settings-table";
-    for (const kind of t.kinds) {
-      const tr = document.createElement("tr");
-      const name = document.createElement("td");
-      name.textContent = (KIND[kind.kind] || KIND.page).label;
-      const count = document.createElement("td");
-      count.textContent = String(kind.count);
-      tr.append(name, count);
-      table.append(tr);
-    }
-    traffic.append(table);
   }
   if (services) {
     services.replaceChildren();
@@ -3744,7 +4979,7 @@ function paintSettingsStatus(data) {
 }
 
 async function loadSettingsStatus() {
-  const boxes = ["settingsFail2ban", "settingsTraffic", "settingsServices", "settingsGeneral"];
+  const boxes = ["settingsFail2ban", "settingsServices", "settingsGeneral"];
   for (const id of boxes) {
     const node = document.getElementById(id);
     if (node && !node.childElementCount) node.textContent = "Wird gelesen …";
@@ -3771,6 +5006,15 @@ document.getElementById("settingsBtn")?.addEventListener("click", () => {
     msg.className = "settings-msg";
   }
   showSettings();
+});
+
+document.getElementById("analyticsBtn")?.addEventListener("click", () => {
+  closeAccountMenu();
+  showAnalytics();
+});
+
+document.getElementById("analyticsClose")?.addEventListener("click", () => {
+  hideAnalytics();
 });
 
 document.querySelectorAll(".settings-nav button").forEach((btn) => {
@@ -3838,13 +5082,20 @@ Promise.all([
   state.events = data.events || [];
   state.hits = data.hits || [];
   state.user = data.user || null;
+  state.selfIp = (data.user && data.user.ip) || "";
   setAccountName(data.user && data.user.username);
+  syncAdminTab();
   setBans(data.bans);
   paintBanButton();
   state.actions = !!data.actions;
   if (Array.isArray(data.jails) && data.jails.length) state.jails = data.jails;
   state.cursor = Math.max(latestTs(), Date.now() / 1000);
-  document.getElementById("loading").hidden = true;
+  const loading = document.getElementById("loading");
+  if (loading) loading.hidden = true;
+  const boot = document.getElementById("boot");
+  if (boot) boot.hidden = true;
+  document.body.classList.remove("is-loading");
+  document.body.classList.add("is-ready");
   setLinkStatus("boot");
   connectStream();
   setInterval(() => {
@@ -3859,7 +5110,15 @@ Promise.all([
 }).catch((err) => {
   if (String(err && err.message) === "auth") return;
   setLinkStatus("down");
-  document.getElementById("loading").textContent = "Die Karte konnte nicht geladen werden.";
+  document.body.classList.remove("is-loading");
+  const boot = document.getElementById("boot");
+  if (boot) boot.hidden = true;
+  const loading = document.getElementById("loading");
+  if (loading) {
+    loading.hidden = false;
+    loading.textContent = "Die Karte konnte nicht geladen werden.";
+  }
 });
 
+armDesktopNotes();
 requestAnimationFrame(render);
